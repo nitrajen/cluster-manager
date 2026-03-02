@@ -169,12 +169,13 @@ def list_clusters(
 
     try:
         # Iterate over clusters with limit for performance
+        # Use page_size=limit to minimize API round-trips
         clusters = []
-        for i, cluster in enumerate(ws.clusters.list()):
-            clusters.append(cluster)
-            if i + 1 >= limit:
+        for i, cluster in enumerate(ws.clusters.list(page_size=limit)):
+            if i >= limit:
                 logger.info(f"Reached limit of {limit} clusters")
                 break
+            clusters.append(cluster)
 
         logger.info(f"Retrieved {len(clusters)} clusters")
         summaries = [_cluster_to_summary(c) for c in clusters]
@@ -318,8 +319,9 @@ def get_cluster_events(
 
     try:
         # ws.clusters.events() returns a generator of ClusterEvent objects
+        # Use page_size=limit to minimize API round-trips
         events = []
-        for i, event in enumerate(ws.clusters.events(cluster_id=cluster_id)):
+        for i, event in enumerate(ws.clusters.events(cluster_id=cluster_id, page_size=limit)):
             if i >= limit:
                 break
             events.append(ClusterEvent(
