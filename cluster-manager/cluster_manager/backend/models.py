@@ -142,6 +142,40 @@ class OptimizationRecommendation(BaseModel):
     priority: str = "medium"  # low, medium, high
 
 
+# --- Live Cluster Metrics Models ---
+
+
+class ClusterMetricsPoint(BaseModel):
+    """Single time-series point of aggregated cluster metrics."""
+    timestamp: datetime
+    cpu_percent: float
+    memory_percent: float
+    cpu_user_percent: float
+    cpu_system_percent: float
+    cpu_wait_percent: float
+    network_sent_bytes: int
+    network_received_bytes: int
+
+
+class NodeMetricsSnapshot(BaseModel):
+    """Current metrics for a single node."""
+    instance_id: str
+    node_type: str
+    is_driver: bool
+    cpu_percent: float
+    memory_percent: float
+    network_sent_bytes: int
+    network_received_bytes: int
+
+
+class ClusterMetricsResponse(BaseModel):
+    """Live CPU/memory metrics from system.compute.node_timeline."""
+    cluster_id: str
+    time_series: list[ClusterMetricsPoint]
+    current_nodes: list[NodeMetricsSnapshot]
+    minutes: int
+
+
 # --- Billing Models ---
 
 

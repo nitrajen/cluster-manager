@@ -6,16 +6,19 @@ from typing import Annotated
 from databricks.sdk.service.compute import ClusterDetails, State
 from fastapi import APIRouter, HTTPException, Query
 
-from ..core import Dependency, logger
+from ..core import Dependency, execute_sql, get_warehouse_id, logger
 from ..models import (
     AutoScaleConfig,
     ClusterActionResponse,
     ClusterDetail,
     ClusterEvent,
     ClusterEventsResponse,
+    ClusterMetricsPoint,
+    ClusterMetricsResponse,
     ClusterSource,
     ClusterState,
     ClusterSummary,
+    NodeMetricsSnapshot,
 )
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
@@ -339,3 +342,107 @@ def get_cluster_events(
     except Exception as e:
         logger.error(f"Failed to get events for cluster {cluster_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{cluster_id}/metrics", response_model=ClusterMetricsResponse)
+def get_cluster_metrics(
+    cluster_id: str,
+    ws: Dependency.Client,
+    config: Dependency.Config,
+    minutes: Annotated[int, Query(ge=5, le=360)] = 60,
+) -> ClusterMetricsResponse:
+    """Get live CPU and memory metrics from system.compute.node_timeline.
+
+    Returns per-minute aggregated time series and current per-node breakdown.
+    """
+    logger.info(f"Getting {minutes}min metrics for cluster {cluster_id}")
+
+    warehouse_id = get_warehouse_id(ws, config)
+
+    sql = f"""
+    SELECT
+        start_time,
+        instance_id,
+        driver,
+        cpu_user_percent,
+        cpu_system_percent,
+        cpu_wait_percent,
+        mem_used_percent,
+        network_sent_bytes,
+        network_received_bytes,
+        node_type
+    FROM system.compute.node_timeline
+    WHERE cluster_id = '{cluster_id}'
+        AND start_time >= CURRENT_TIMESTAMP - INTERVAL {minutes} MINUTE
+    ORDER BY start_time ASC
+    """
+
+    try:
+        rows = execute_sql(ws, warehouse_id, sql)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Could not fetch metrics for {cluster_id}: {e}")
+        return ClusterMetricsResponse(
+            cluster_id=cluster_id, time_series=[], current_nodes=[], minutes=minutes
+        )
+
+    if not rows:
+        return ClusterMetricsResponse(
+            cluster_id=cluster_id, time_series=[], current_nodes=[], minutes=minutes
+        )
+
+    # Aggregate by timestamp
+    from collections import defaultdict
+    ts_buckets: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        ts_buckets[row["start_time"]].append(row)
+
+    time_series = []
+    for ts_str, nodes in sorted(ts_buckets.items()):
+        n = len(nodes)
+        cpu_user = sum(float(r["cpu_user_percent"] or 0) for r in nodes) / n
+        cpu_system = sum(float(r["cpu_system_percent"] or 0) for r in nodes) / n
+        cpu_wait = sum(float(r["cpu_wait_percent"] or 0) for r in nodes) / n
+        mem = sum(float(r["mem_used_percent"] or 0) for r in nodes) / n
+        net_sent = sum(int(r["network_sent_bytes"] or 0) for r in nodes)
+        net_recv = sum(int(r["network_received_bytes"] or 0) for r in nodes)
+
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if isinstance(ts_str, str) else ts_str
+
+        time_series.append(ClusterMetricsPoint(
+            timestamp=ts,
+            cpu_percent=round(cpu_user + cpu_system, 2),
+            memory_percent=round(mem, 2),
+            cpu_user_percent=round(cpu_user, 2),
+            cpu_system_percent=round(cpu_system, 2),
+            cpu_wait_percent=round(cpu_wait, 2),
+            network_sent_bytes=net_sent,
+            network_received_bytes=net_recv,
+        ))
+
+    # Current nodes = latest timestamp
+    latest_ts = max(ts_buckets.keys())
+    current_nodes = []
+    for row in ts_buckets[latest_ts]:
+        cpu_u = float(row["cpu_user_percent"] or 0)
+        cpu_s = float(row["cpu_system_percent"] or 0)
+        current_nodes.append(NodeMetricsSnapshot(
+            instance_id=row["instance_id"] or "unknown",
+            node_type=row["node_type"] or "unknown",
+            is_driver=row["driver"] in (True, "true", "True"),
+            cpu_percent=round(cpu_u + cpu_s, 2),
+            memory_percent=round(float(row["mem_used_percent"] or 0), 2),
+            network_sent_bytes=int(row["network_sent_bytes"] or 0),
+            network_received_bytes=int(row["network_received_bytes"] or 0),
+        ))
+
+    # Sort: driver first, then by instance_id
+    current_nodes.sort(key=lambda n: (not n.is_driver, n.instance_id))
+
+    return ClusterMetricsResponse(
+        cluster_id=cluster_id,
+        time_series=time_series,
+        current_nodes=current_nodes,
+        minutes=minutes,
+    )

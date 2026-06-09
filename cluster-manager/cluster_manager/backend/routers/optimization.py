@@ -4,14 +4,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from databricks.sdk.service.compute import State
-from databricks.sdk.service.sql import (
-    Disposition,
-    Format,
-    StatementState,
-)
 from fastapi import APIRouter, HTTPException, Query
 
-from ..core import Dependency, logger
+from ..core import Dependency, execute_sql, get_warehouse_id, logger
 from ..models import (
     AutoscalingIssueType,
     AutoscalingRecommendation,
@@ -44,62 +39,11 @@ router = APIRouter(prefix="/api/optimization", tags=["optimization"])
 
 
 def _execute_sql(ws, warehouse_id: str, sql: str) -> list[dict]:
-    """Execute a SQL statement and return results as a list of dicts."""
-    logger.info(f"Executing SQL: {sql[:100]}...")
-
-    response = ws.statement_execution.execute_statement(
-        warehouse_id=warehouse_id,
-        statement=sql,
-        format=Format.JSON_ARRAY,
-        disposition=Disposition.INLINE,
-        wait_timeout="30s",
-    )
-
-    if response.status.state == StatementState.FAILED:
-        error_msg = response.status.error.message if response.status.error else "Unknown error"
-        logger.error(f"SQL execution failed: {error_msg}")
-        raise HTTPException(status_code=500, detail=f"SQL execution failed: {error_msg}")
-
-    if response.status.state != StatementState.SUCCEEDED:
-        raise HTTPException(
-            status_code=500,
-            detail=f"SQL execution did not succeed: {response.status.state.value}"
-        )
-
-    if not response.result or not response.result.data_array:
-        return []
-
-    columns = [col.name for col in response.manifest.schema.columns] if response.manifest else []
-
-    results = []
-    for row in response.result.data_array:
-        row_dict = {}
-        for i, col_name in enumerate(columns):
-            row_dict[col_name] = row[i] if i < len(row) else None
-        results.append(row_dict)
-
-    return results
+    return execute_sql(ws, warehouse_id, sql)
 
 
 def _get_warehouse_id(ws, config) -> str:
-    """Get SQL warehouse ID from config or find a suitable one."""
-    if config.sql_warehouse_id:
-        return config.sql_warehouse_id
-
-    warehouses = list(ws.warehouses.list())
-    for wh in warehouses:
-        if wh.state and wh.state.value == "RUNNING":
-            logger.info(f"Using warehouse: {wh.name} ({wh.id})")
-            return wh.id
-
-    if warehouses:
-        logger.info(f"Using warehouse: {warehouses[0].name} ({warehouses[0].id})")
-        return warehouses[0].id
-
-    raise HTTPException(
-        status_code=500,
-        detail="No SQL warehouse available. Configure CLUSTER_MANAGER_SQL_WAREHOUSE_ID"
-    )
+    return get_warehouse_id(ws, config)
 
 
 def _list_clusters_limited(ws, limit: int = 100) -> list:

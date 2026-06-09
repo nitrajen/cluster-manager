@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Annotated, ClassVar, TypeAlias
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.sql import Disposition, Format, StatementState
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, Header, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -270,3 +271,85 @@ class Dependency:
     Config: TypeAlias = Annotated[AppConfig, Depends(get_config)]
     """Application configuration loaded from environment variables.
     Recommended usage: `config: Dependency.Config`"""
+
+
+# --- Shared SQL Utilities ---
+
+
+def get_warehouse_id(ws: WorkspaceClient, config: AppConfig) -> str:
+    """Get SQL warehouse ID from config or find a suitable one.
+
+    Priority: configured > running serverless > running regular > stopped serverless > any.
+    """
+    if config.sql_warehouse_id:
+        return config.sql_warehouse_id
+
+    warehouses = list(ws.warehouses.list())
+
+    def _is_serverless(wh) -> bool:
+        if getattr(wh, 'enable_serverless_compute', False):
+            return True
+        wh_type = getattr(wh, 'warehouse_type', None)
+        return bool(wh_type and str(wh_type.value).upper() == "PRO")
+
+    serverless = [wh for wh in warehouses if _is_serverless(wh)]
+    regular = [wh for wh in warehouses if not _is_serverless(wh)]
+
+    for wh in serverless:
+        if wh.state and wh.state.value == "RUNNING":
+            return wh.id
+    for wh in regular:
+        if wh.state and wh.state.value == "RUNNING":
+            return wh.id
+    for wh in serverless:
+        if wh.state and wh.state.value in ("STOPPED", "STOPPING"):
+            return wh.id
+    if warehouses:
+        return warehouses[0].id
+
+    raise HTTPException(
+        status_code=500,
+        detail="No SQL warehouse available. Configure CLUSTER_MANAGER_SQL_WAREHOUSE_ID"
+    )
+
+
+def execute_sql(ws: WorkspaceClient, warehouse_id: str, sql: str, timeout: str = "30s") -> list[dict]:
+    """Execute SQL and return results as list of dicts."""
+    logger.info(f"Executing SQL: {sql[:100]}...")
+
+    try:
+        response = ws.statement_execution.execute_statement(
+            warehouse_id=warehouse_id,
+            statement=sql,
+            format=Format.JSON_ARRAY,
+            disposition=Disposition.INLINE,
+            wait_timeout=timeout,
+        )
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"SQL execution error: {error_msg}")
+        if "WAREHOUSE" in error_msg.upper() or "timeout" in error_msg.lower():
+            raise HTTPException(
+                status_code=503,
+                detail=f"SQL warehouse unavailable. Please try again. Error: {error_msg}"
+            )
+        raise HTTPException(status_code=500, detail=f"SQL execution error: {error_msg}")
+
+    if response.status.state == StatementState.FAILED:
+        error_msg = response.status.error.message if response.status.error else "Unknown error"
+        raise HTTPException(status_code=500, detail=f"SQL execution failed: {error_msg}")
+
+    if response.status.state in (StatementState.PENDING, StatementState.RUNNING):
+        raise HTTPException(status_code=503, detail="SQL query timed out. Warehouse may be starting.")
+
+    if response.status.state != StatementState.SUCCEEDED:
+        raise HTTPException(status_code=500, detail=f"SQL state: {response.status.state.value}")
+
+    if not response.result or not response.result.data_array:
+        return []
+
+    columns = [col.name for col in response.manifest.schema.columns] if response.manifest else []
+    return [
+        {columns[i]: row[i] if i < len(row) else None for i in range(len(columns))}
+        for row in response.result.data_array
+    ]

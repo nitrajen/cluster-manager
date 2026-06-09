@@ -7,6 +7,7 @@ import {
   Cpu,
   ExternalLink,
   Loader2,
+  MemoryStick,
   Play,
   RefreshCw,
   Settings,
@@ -15,9 +16,25 @@ import {
   Tag,
   Users,
 } from "lucide-react";
+import { useState } from "react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { toast } from "sonner";
 
-import { useCluster, useClusterEvents, useStartCluster, useStopCluster } from "@/lib/api";
+import {
+  useCluster,
+  useClusterEvents,
+  useClusterMetrics,
+  useStartCluster,
+  useStopCluster,
+} from "@/lib/api";
 import { cn, formatDateTime, formatDuration, formatNumber } from "@/lib/utils";
 
 const stateColors: Record<string, { bg: string; text: string }> = {
@@ -61,6 +78,203 @@ function InfoRow({
   }
 
   return <div className="px-2 -mx-2">{content}</div>;
+}
+
+const TIME_RANGES = [
+  { label: "15m", minutes: 15 },
+  { label: "1h", minutes: 60 },
+  { label: "6h", minutes: 360 },
+] as const;
+
+function formatTime(timestamp: string) {
+  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function LiveMetricsSection({ clusterId }: { clusterId: string }) {
+  const [minutes, setMinutes] = useState(60);
+  const { data, isLoading } = useClusterMetrics(clusterId, minutes);
+
+  if (isLoading) {
+    return (
+      <div className="bg-card rounded-lg border p-6">
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span className="text-sm text-muted-foreground">Loading metrics...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data || data.time_series.length === 0) {
+    return (
+      <div className="bg-card rounded-lg border p-6">
+        <h2 className="text-lg font-semibold mb-2">Live Metrics</h2>
+        <p className="text-sm text-muted-foreground">
+          No metrics available. Data appears once the cluster has been running for a few minutes.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-card rounded-lg border p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Live Metrics</h2>
+        <div className="flex gap-1">
+          {TIME_RANGES.map((r) => (
+            <button
+              key={r.minutes}
+              onClick={() => setMinutes(r.minutes)}
+              className={cn(
+                "px-3 py-1 text-sm rounded-md transition-colors",
+                minutes === r.minutes
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted hover:bg-muted/80 text-muted-foreground"
+              )}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* CPU Chart */}
+      <div>
+        <h3 className="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
+          <Cpu size={14} /> CPU Usage (%)
+        </h3>
+        <ResponsiveContainer width="100%" height={180}>
+          <AreaChart data={data.time_series}>
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <XAxis
+              dataKey="timestamp"
+              tickFormatter={formatTime}
+              tick={{ fontSize: 11 }}
+              className="text-muted-foreground"
+            />
+            <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
+            <Tooltip
+              labelFormatter={formatTime}
+              formatter={(value: number, name: string) => [`${value.toFixed(1)}%`, name]}
+            />
+            <Area
+              type="monotone"
+              dataKey="cpu_system_percent"
+              stackId="cpu"
+              fill="#f97316"
+              stroke="#f97316"
+              fillOpacity={0.4}
+              name="System"
+            />
+            <Area
+              type="monotone"
+              dataKey="cpu_user_percent"
+              stackId="cpu"
+              fill="#3b82f6"
+              stroke="#3b82f6"
+              fillOpacity={0.4}
+              name="User"
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Memory Chart */}
+      <div>
+        <h3 className="text-sm font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
+          <MemoryStick size={14} /> Memory Usage (%)
+        </h3>
+        <ResponsiveContainer width="100%" height={180}>
+          <AreaChart data={data.time_series}>
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <XAxis
+              dataKey="timestamp"
+              tickFormatter={formatTime}
+              tick={{ fontSize: 11 }}
+              className="text-muted-foreground"
+            />
+            <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
+            <Tooltip
+              labelFormatter={formatTime}
+              formatter={(value: number) => [`${value.toFixed(1)}%`, "Memory"]}
+            />
+            <Area
+              type="monotone"
+              dataKey="memory_percent"
+              fill="#8b5cf6"
+              stroke="#8b5cf6"
+              fillOpacity={0.3}
+              name="Memory"
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Node Table */}
+      {data.current_nodes.length > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-muted-foreground mb-2">Current Nodes</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left">
+                  <th className="py-2 pr-4 font-medium">Role</th>
+                  <th className="py-2 pr-4 font-medium">Node Type</th>
+                  <th className="py-2 pr-4 font-medium text-right">CPU %</th>
+                  <th className="py-2 pr-4 font-medium text-right">Mem %</th>
+                  <th className="py-2 font-medium text-right">Net Out</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.current_nodes.map((node) => (
+                  <tr key={node.instance_id} className="border-b last:border-0">
+                    <td className="py-2 pr-4">
+                      <span className={cn(
+                        "px-2 py-0.5 rounded text-xs font-medium",
+                        node.is_driver
+                          ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                          : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400"
+                      )}>
+                        {node.is_driver ? "Driver" : "Worker"}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-xs">{node.node_type}</td>
+                    <td className="py-2 pr-4 text-right">
+                      <span className={cn(
+                        node.cpu_percent > 80 ? "text-red-600 dark:text-red-400" :
+                        node.cpu_percent > 50 ? "text-yellow-600 dark:text-yellow-400" :
+                        "text-green-600 dark:text-green-400"
+                      )}>
+                        {node.cpu_percent.toFixed(1)}%
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4 text-right">
+                      <span className={cn(
+                        node.memory_percent > 85 ? "text-red-600 dark:text-red-400" :
+                        node.memory_percent > 60 ? "text-yellow-600 dark:text-yellow-400" :
+                        "text-green-600 dark:text-green-400"
+                      )}>
+                        {node.memory_percent.toFixed(1)}%
+                      </span>
+                    </td>
+                    <td className="py-2 text-right text-muted-foreground">
+                      {formatBytes(node.network_sent_bytes)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ClusterDetailPage() {
@@ -211,6 +425,9 @@ function ClusterDetailPage() {
               )}
             </div>
           </div>
+
+          {/* Live Metrics - only for running clusters */}
+          {isRunning && <LiveMetricsSection clusterId={clusterId} />}
 
           {/* Timing */}
           <div className="bg-card rounded-lg border p-6">

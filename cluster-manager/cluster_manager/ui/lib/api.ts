@@ -160,6 +160,35 @@ export interface ScheduleOptimizationRecommendation {
   reason: string;
 }
 
+// Live cluster metrics types
+export interface ClusterMetricsPoint {
+  timestamp: string;
+  cpu_percent: number;
+  memory_percent: number;
+  cpu_user_percent: number;
+  cpu_system_percent: number;
+  cpu_wait_percent: number;
+  network_sent_bytes: number;
+  network_received_bytes: number;
+}
+
+export interface NodeMetricsSnapshot {
+  instance_id: string;
+  node_type: string;
+  is_driver: boolean;
+  cpu_percent: number;
+  memory_percent: number;
+  network_sent_bytes: number;
+  network_received_bytes: number;
+}
+
+export interface ClusterMetricsResponse {
+  cluster_id: string;
+  time_series: ClusterMetricsPoint[];
+  current_nodes: NodeMetricsSnapshot[];
+  minutes: number;
+}
+
 // API functions
 async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -205,6 +234,16 @@ export function useClusterEvents(clusterId: string, limit = 50) {
         `/api/clusters/${clusterId}/events?limit=${limit}`
       ),
     enabled: !!clusterId,
+  });
+}
+
+export function useClusterMetrics(clusterId: string, minutes = 60) {
+  return useQuery({
+    queryKey: ["cluster-metrics", clusterId, minutes],
+    queryFn: () =>
+      fetchApi<ClusterMetricsResponse>(`/api/clusters/${clusterId}/metrics?minutes=${minutes}`),
+    enabled: !!clusterId,
+    refetchInterval: 60000,
   });
 }
 

@@ -3,14 +3,9 @@
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from databricks.sdk.service.sql import (
-    Disposition,
-    Format,
-    StatementState,
-)
 from fastapi import APIRouter, HTTPException, Query
 
-from ..core import Dependency, logger
+from ..core import Dependency, execute_sql, get_warehouse_id, logger
 from ..models import (
     BillingSummary,
     BillingTrend,
@@ -22,119 +17,12 @@ router = APIRouter(prefix="/api/billing", tags=["billing"])
 
 
 def _execute_sql(ws, warehouse_id: str, sql: str, timeout: str = "60s") -> list[dict]:
-    """Execute a SQL statement and return results as a list of dicts."""
-    logger.info(f"Executing SQL on warehouse {warehouse_id}: {sql[:100]}...")
-
-    try:
-        response = ws.statement_execution.execute_statement(
-            warehouse_id=warehouse_id,
-            statement=sql,
-            format=Format.JSON_ARRAY,
-            disposition=Disposition.INLINE,
-            wait_timeout=timeout,
-        )
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"SQL execution error: {error_msg}")
-        if "WAREHOUSE" in error_msg.upper() or "timeout" in error_msg.lower():
-            raise HTTPException(
-                status_code=503,
-                detail=f"SQL warehouse unavailable or starting. Please try again in a moment. Error: {error_msg}"
-            )
-        raise HTTPException(status_code=500, detail=f"SQL execution error: {error_msg}")
-
-    if response.status.state == StatementState.FAILED:
-        error_msg = response.status.error.message if response.status.error else "Unknown error"
-        logger.error(f"SQL execution failed: {error_msg}")
-        raise HTTPException(status_code=500, detail=f"SQL execution failed: {error_msg}")
-
-    if response.status.state == StatementState.PENDING or response.status.state == StatementState.RUNNING:
-        raise HTTPException(
-            status_code=503,
-            detail="SQL query timed out. The warehouse may be starting. Please try again."
-        )
-
-    if response.status.state != StatementState.SUCCEEDED:
-        raise HTTPException(
-            status_code=500,
-            detail=f"SQL execution did not succeed: {response.status.state.value}"
-        )
-
-    if not response.result or not response.result.data_array:
-        return []
-
-    # Get column names from manifest
-    columns = [col.name for col in response.manifest.schema.columns] if response.manifest else []
-
-    # Convert to list of dicts
-    results = []
-    for row in response.result.data_array:
-        row_dict = {}
-        for i, col_name in enumerate(columns):
-            row_dict[col_name] = row[i] if i < len(row) else None
-        results.append(row_dict)
-
-    return results
-
-
-def _is_serverless(wh) -> bool:
-    """Check if a warehouse is serverless."""
-    # Check enable_serverless_compute flag
-    if getattr(wh, 'enable_serverless_compute', False):
-        return True
-    # Check warehouse_type (PRO warehouses are serverless-capable)
-    wh_type = getattr(wh, 'warehouse_type', None)
-    if wh_type and str(wh_type.value).upper() == "PRO":
-        return True
-    return False
+    """Thin wrapper for billing-specific timeout."""
+    return execute_sql(ws, warehouse_id, sql, timeout=timeout)
 
 
 def _get_warehouse_id(ws, config) -> str:
-    """Get SQL warehouse ID from config or find a suitable one.
-
-    Priority:
-    1. Configured warehouse ID
-    2. Running serverless warehouse (instant)
-    3. Running regular warehouse
-    4. Stopped serverless warehouse (starts quickly)
-    5. Any available warehouse (may need to wait for startup)
-    """
-    if config.sql_warehouse_id:
-        return config.sql_warehouse_id
-
-    warehouses = list(ws.warehouses.list())
-
-    serverless_warehouses = [wh for wh in warehouses if _is_serverless(wh)]
-    regular_warehouses = [wh for wh in warehouses if not _is_serverless(wh)]
-
-    # 1. Try running serverless warehouse first (best option)
-    for wh in serverless_warehouses:
-        if wh.state and wh.state.value == "RUNNING":
-            logger.info(f"Using running serverless warehouse: {wh.name} ({wh.id})")
-            return wh.id
-
-    # 2. Try any running warehouse
-    for wh in regular_warehouses:
-        if wh.state and wh.state.value == "RUNNING":
-            logger.info(f"Using running warehouse: {wh.name} ({wh.id})")
-            return wh.id
-
-    # 3. Try stopped serverless warehouse (starts quickly)
-    for wh in serverless_warehouses:
-        if wh.state and wh.state.value in ("STOPPED", "STOPPING"):
-            logger.info(f"Using serverless warehouse (will auto-start): {wh.name} ({wh.id})")
-            return wh.id
-
-    # 4. Fall back to any available warehouse
-    if warehouses:
-        wh = warehouses[0]
-        logger.info(f"Using warehouse (may need startup): {wh.name} ({wh.id})")
-        return wh.id
-
-    raise HTTPException(
-        status_code=500,
-        detail="No SQL warehouse available. Configure CLUSTER_MANAGER_SQL_WAREHOUSE_ID"
-    )
+    return get_warehouse_id(ws, config)
 
 
 @router.get("/summary", response_model=BillingSummary)
