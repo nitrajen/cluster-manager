@@ -114,55 +114,27 @@ This ensures no permanent cluster loss through the UI. Configuration remains int
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Databricks App                           │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐         ┌─────────────────────────┐   │
-│  │   React UI      │  HTTP   │   FastAPI Backend       │   │
-│  │   (TypeScript)  │◄───────►│   (Python)              │   │
-│  └─────────────────┘         └───────────┬─────────────┘   │
-│                                          │                  │
-│                              ┌───────────▼─────────────┐   │
-│                              │   Databricks SDK        │   │
-│                              └───────────┬─────────────┘   │
-└──────────────────────────────────────────│──────────────────┘
-                                           │
-           ┌───────────────────────────────┼───────────────────────────────┐
-           │                               │                               │
-           ▼                               ▼                               ▼
-   ┌───────────────┐            ┌───────────────────┐           ┌───────────────┐
-   │ Clusters API  │            │ SQL Warehouse     │           │ Policies API  │
-   │ (start/stop)  │            │ (billing queries) │           │ (governance)  │
-   └───────────────┘            └───────────────────┘           └───────────────┘
-                                         │
-                                         ▼
-                              ┌───────────────────────┐
-                              │ system.billing.usage  │
-                              │ (Unity Catalog)       │
-                              └───────────────────────┘
+```mermaid
+graph TD
+    subgraph App["Databricks App"]
+        UI["React UI (TypeScript)"] <-->|HTTP| API["FastAPI Backend (Python)"]
+        API --> SDK["Databricks SDK"]
+    end
+
+    SDK --> Clusters["Clusters API (start/stop)"]
+    SDK --> SQL["SQL Warehouse (billing queries)"]
+    SDK --> Policies["Policies API (governance)"]
+    SQL --> Billing["system.billing.usage (Unity Catalog)"]
 ```
 
 ### MCP Server Integration
 
 The app also exposes a **Managed MCP Server** for AI agent integration via Databricks AI Playground:
 
-```
-┌──────────────────────┐     UC HTTP Connection     ┌──────────────────────┐
-│   AI Playground      │ ◄─────────────────────────►│   Cluster Manager    │
-│   (or AI Agent)      │      JSON-RPC 2.0          │   /api/mcp/*         │
-└──────────────────────┘                            └──────────────────────┘
-                                                              │
-                                                    ┌─────────▼─────────┐
-                                                    │   7 MCP Tools     │
-                                                    │   list_clusters   │
-                                                    │   get_cluster     │
-                                                    │   start_cluster   │
-                                                    │   stop_cluster    │
-                                                    │   get_events      │
-                                                    │   list_policies   │
-                                                    │   get_policy      │
-                                                    └───────────────────┘
+```mermaid
+graph LR
+    AI["AI Playground / Agent"] <-->|"UC HTTP Connection (JSON-RPC 2.0)"| MCP["Cluster Manager /api/mcp/*"]
+    MCP --> Tools["7 MCP Tools:<br/>list_clusters<br/>get_cluster<br/>start_cluster<br/>stop_cluster<br/>get_events<br/>list_policies<br/>get_policy"]
 ```
 
 See [MCP Server Guide](docs/MCP_SERVER.md) for setup instructions.
@@ -171,42 +143,26 @@ See [MCP Server Guide](docs/MCP_SERVER.md) for setup instructions.
 
 Real-time CPU, memory, disk, and network metrics from cluster nodes via OpenTelemetry:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│   Client Workspace (e.g. DEMO-WEST)                             │
-│                                                                  │
-│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
-│   │   Driver    │  │  Worker 1   │  │  Worker N   │           │
-│   │  OTel Col.  │  │  OTel Col.  │  │  OTel Col.  │           │
-│   └──────┬──────┘  └──────┬──────┘  └──────┬──────┘           │
-└──────────┼─────────────────┼─────────────────┼──────────────────┘
-           │                 │                 │
-           │  M2M OAuth (SP client_credentials)│
-           ▼                 ▼                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│   Collector App (FEVM Workspace)                                 │
-│                                                                  │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  POST /api/otel/v1/metrics (OTLP/HTTP JSON)              │ │
-│   │  - Validates OAuth token                                   │ │
-│   │  - Parses OTLP metrics payload                            │ │
-│   │  - Batch inserts to Lakebase                              │ │
-│   └───────────────────────────┬───────────────────────────────┘ │
-│                               ▼                                  │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  Lakebase (PostgreSQL)                                    │ │
-│   │  - node_metrics table                                      │ │
-│   │  - Indexed by (cluster_id, ts DESC)                       │ │
-│   │  - 7-day retention                                         │ │
-│   └───────────────────────────┬───────────────────────────────┘ │
-│                               ▼                                  │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  GET /api/live-metrics/active                             │ │
-│   │  GET /api/live-metrics/{cluster_id}                       │ │
-│   │  GET /api/live-metrics/{cluster_id}/history               │ │
-│   │  GET /api/live-metrics/alerts                             │ │
-│   └───────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Client["Client Workspace (source clusters)"]
+        Driver["Driver<br/>OTel Collector"] 
+        W1["Worker 1<br/>OTel Collector"]
+        WN["Worker N<br/>OTel Collector"]
+    end
+
+    Driver -->|"M2M OAuth<br/>(SP client_credentials)"| Ingest
+    W1 -->|"M2M OAuth"| Ingest
+    WN -->|"M2M OAuth"| Ingest
+
+    subgraph Collector["Collector App (deployed workspace)"]
+        Ingest["POST /api/otel/v1/metrics<br/>OTLP/HTTP JSON"]
+        Ingest -->|"Batch insert"| LB["Lakebase (PostgreSQL)<br/>node_metrics table<br/>7-day retention"]
+        LB --> API1["GET /api/live-metrics/active"]
+        LB --> API2["GET /api/live-metrics/{cluster_id}"]
+        LB --> API3["GET /api/live-metrics/{id}/history"]
+        LB --> API4["GET /api/live-metrics/alerts"]
+    end
 ```
 
 **Key Features:**
@@ -231,7 +187,7 @@ Real-time CPU, memory, disk, and network metrics from cluster nodes via OpenTele
 **Setup:**
 1. Upload OTel Collector binary to a Unity Catalog Volume (see below)
 2. Upload init script to client workspace (Workspace path recommended)
-3. Add NAT IP of client workspace to FEVM IP allowlist
+3. Add NAT IP of client workspace to collector workspace IP allowlist (if applicable)
 4. Attach init script to cluster — no env vars needed (defaults embedded)
 5. Bootstrap Lakebase pool: visit the app once as a human user, or `POST /api/otel/bootstrap`
 6. Metrics flow automatically on cluster start
@@ -246,8 +202,8 @@ Real-time CPU, memory, disk, and network metrics from cluster nodes via OpenTele
 |-------------|---------|
 | OTel Collector binary in UC Volume | Fast startup (avoids GitHub download on every cluster start) |
 | Workspace init script path | Avoids UC Artifact Allowlist restrictions |
-| Service Principal (SP) on FEVM | M2M OAuth for cluster-to-app auth |
-| FEVM IP allowlist entry | Allow client workspace NAT IPs to reach the app |
+| Service Principal (SP) on collector workspace | M2M OAuth for cluster-to-app auth |
+| IP allowlist entry (if workspace has IP ACL) | Allow client workspace NAT IPs to reach the app |
 
 ### Step 1: Download and Upload OTel Collector Binary
 
@@ -296,12 +252,12 @@ The script has **centralized defaults** — no env vars required for standard de
 
 ```bash
 # Defaults embedded in the script (override via cluster env vars if needed):
-OTEL_ENDPOINT="https://cluster-manager-xxx.aws.databricksapps.com"
+OTEL_ENDPOINT="https://<your-app>.aws.databricksapps.com"
 OTEL_VOLUME_PATH="/Volumes/main/cluster_manager/binaries"
 OTEL_INTERVAL="15s"
 OTEL_SP_CLIENT_ID="<service-principal-client-id>"
 OTEL_SP_CLIENT_SECRET="<service-principal-secret>"
-OTEL_TOKEN_ENDPOINT="https://<fevm-workspace>.cloud.databricks.com/oidc/v1/token"
+OTEL_TOKEN_ENDPOINT="https://<your-workspace>.cloud.databricks.com/oidc/v1/token"
 ```
 
 To override for a specific cluster, set env vars in `spark_env_vars`:
@@ -328,18 +284,18 @@ Or via cluster policy for org-wide deployment:
 }
 ```
 
-### Step 5: Allow Client Workspace IP
+### Step 5: Allow Client Workspace IP (if applicable)
 
-The FEVM workspace has an IP allowlist. Add the NAT IP of your client workspace:
+If your collector workspace has an IP allowlist enabled, add the NAT IP of the client workspace(s) that will push metrics:
 
 ```bash
-# Find your workspace's outbound IP (run on a cluster in that workspace):
+# Find your client workspace's outbound IP (run on a cluster in that workspace):
 # curl -s ifconfig.me
 
-# Add to FEVM allowlist:
+# Add to collector workspace allowlist:
 databricks api post /api/2.0/ip-access-lists \
   --json '{"label": "otel-<workspace-name>", "list_type": "ALLOW", "ip_addresses": ["<NAT_IP>/32"]}' \
-  --profile "FEVM_PROFILE"
+  --profile "COLLECTOR_WORKSPACE_PROFILE"
 ```
 
 ### Step 6: Bootstrap Lakebase
@@ -348,10 +304,10 @@ Lakebase requires a human user OAuth token (not SP). Visit the app once in your 
 
 ```bash
 # Get your user token
-TOKEN=$(databricks auth token --profile FEVM_PROFILE -o json | jq -r '.access_token')
+TOKEN=$(databricks auth token --profile YOUR_PROFILE -o json | jq -r '.access_token')
 
 # Bootstrap
-curl -X POST "https://cluster-manager-xxx.aws.databricksapps.com/api/otel/bootstrap" \
+curl -X POST "https://<your-app>.aws.databricksapps.com/api/otel/bootstrap" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -361,29 +317,27 @@ The OTel pipeline uses **Machine-to-Machine OAuth** (client_credentials grant) s
 
 #### Architecture
 
-```
-Cluster Node                          FEVM Workspace
-┌──────────────┐                     ┌──────────────────────┐
-│ OTel Collector│─── client_credentials ──►│ /oidc/v1/token      │
-│              │◄── access_token ─────────│                      │
-│              │                          └──────────────────────┘
-│              │
-│              │─── Bearer <token> ──────►┌──────────────────────┐
-│              │                          │ App: /api/otel/v1/   │
-└──────────────┘                          │ - Validates JWT      │
-                                          │ - Inserts to Lakebase│
-                                          └──────────────────────┘
+```mermaid
+sequenceDiagram
+    participant Node as Cluster Node (OTel Collector)
+    participant Token as Collector Workspace /oidc/v1/token
+    participant App as App: /api/otel/v1/metrics
+
+    Node->>Token: client_credentials grant
+    Token-->>Node: access_token (1h TTL)
+    Node->>App: Bearer <token> + metrics payload
+    App->>App: Validate JWT → Insert to Lakebase
 ```
 
 #### Step-by-Step: Create Service Principal
 
-1. **Create a Service Principal** on the FEVM workspace (Account Console → Service Principals):
+1. **Create a Service Principal** on the collector workspace (Account Console → Service Principals):
 
 ```bash
 # Via Account API
 databricks account service-principals create \
   --json '{"display_name": "otel-collector-sp", "active": true}' \
-  --profile FEVM_ACCOUNT
+  --profile YOUR_ACCOUNT_PROFILE
 ```
 
 2. **Generate OAuth Secret** for the SP:
@@ -393,22 +347,22 @@ databricks account service-principals create \
 # Save: client_id and client_secret
 ```
 
-3. **Grant Workspace Access** — add SP to the FEVM workspace:
+3. **Grant Workspace Access** — add SP to the collector workspace:
 
 ```bash
-# Account Console → Workspaces → FEVM → Permissions → Add SP
+# Account Console → Workspaces → <your workspace> → Permissions → Add SP
 # Or via API:
 databricks workspace assign-principal \
   --principal-id <SP_ID> \
   --permissions "USER" \
-  --profile FEVM_ACCOUNT
+  --profile YOUR_ACCOUNT_PROFILE
 ```
 
 4. **Test Token Generation**:
 
 ```bash
 # Verify the SP can get tokens
-curl -s -X POST "https://<fevm-workspace>.cloud.databricks.com/oidc/v1/token" \
+curl -s -X POST "https://<your-workspace>.cloud.databricks.com/oidc/v1/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials&client_id=<CLIENT_ID>&client_secret=<CLIENT_SECRET>&scope=all-apis"
 
@@ -433,7 +387,7 @@ curl -s -X POST "https://<fevm-workspace>.cloud.databricks.com/oidc/v1/token" \
 | **Scope isolation** | SP has minimal permissions — only `all-apis` scope for token endpoint |
 | **Token type discrimination** | JWT `sub` claim: human=`email@`, SP=`UUID` |
 | **Lakebase protection** | Only human user tokens accepted for DB writes |
-| **IP-level filtering** | FEVM allowlist restricts which IPs can reach the app |
+| **IP-level filtering** | Workspace IP allowlist restricts which IPs can reach the app |
 | **Credential rotation** | Generate new secret → update init script defaults → restart clusters |
 
 #### Rotating SP Credentials
@@ -467,7 +421,7 @@ The init script identifies driver vs worker nodes:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `INIT_SCRIPT_FAILURE` | UC Artifact Allowlist blocks Volume path | Use Workspace path instead |
-| HTTP 403 from collector | Client IP not in FEVM allowlist | Add NAT IP to allowlist |
+| HTTP 403 from collector | Client IP not in workspace allowlist | Add NAT IP to allowlist |
 | HTTP 401 from collector | SP token expired or invalid | Check SP credentials in script |
 | Metrics not in dashboard | Lakebase not bootstrapped | Visit app in browser or call `/api/otel/bootstrap` |
 | All nodes show as "Worker" | `DB_IS_DRIVER` not set + Spark not started at init time | Expected on DBR 17+; dashboard still groups correctly |
@@ -493,7 +447,8 @@ Before deploying, ensure you have:
 ### Quick Start
 
 ```bash
-# Clone and navigate
+# Clone and deploy
+git clone https://github.com/LaurentPRAT-DB/cluster-manager.git
 cd cluster-manager
 
 # Deploy to your workspace
@@ -576,7 +531,7 @@ export CLUSTER_MANAGER_SQL_WAREHOUSE_ID=abc123def456
 - **Safe Mode**: No permanent cluster deletion through this UI
 - **Audit**: All actions are logged through standard Databricks audit logs
 - **OTel M2M Auth**: Service Principal client credentials flow for cluster-to-app communication
-- **IP ACL**: FEVM workspace IP allowlist controls which client workspaces can push metrics
+- **IP ACL**: If your workspace has an IP allowlist, it controls which client workspaces can push metrics
 - **Token Isolation**: SP tokens authenticate the push; Lakebase writes use cached human user tokens only
 
 ---
