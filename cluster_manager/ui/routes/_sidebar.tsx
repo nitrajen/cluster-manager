@@ -110,10 +110,10 @@ function SidebarLayout() {
             {!collapsed && (
               <div className="flex flex-col">
                 <span className="text-xs font-medium text-sidebar-foreground">
-                  v{__APP_VERSION__}
+                  v{__APP_VERSION__} (build {__BUILD_NUMBER__})
                 </span>
                 <span className="text-[10px] text-muted-foreground">
-                  Build {__BUILD_HASH__} • {__BUILD_DATE__}
+                  {__BUILD_HASH__} • {__BUILD_DATE__}
                 </span>
               </div>
             )}

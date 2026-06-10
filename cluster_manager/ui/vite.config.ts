@@ -9,13 +9,14 @@ const getGitInfo = () => {
   try {
     const commitHash = execSync("git rev-parse --short HEAD").toString().trim();
     const commitDate = execSync("git log -1 --format=%cd --date=short").toString().trim();
-    return { commitHash, commitDate };
+    const commitCount = execSync("git rev-list --count HEAD").toString().trim();
+    return { commitHash, commitDate, commitCount };
   } catch {
-    return { commitHash: "dev", commitDate: new Date().toISOString().split("T")[0] };
+    return { commitHash: "dev", commitDate: new Date().toISOString().split("T")[0], commitCount: "0" };
   }
 };
 
-const { commitHash, commitDate } = getGitInfo();
+const { commitHash, commitDate, commitCount } = getGitInfo();
 
 export default defineConfig({
   plugins: [
@@ -44,7 +45,8 @@ export default defineConfig({
   },
   define: {
     __APP_NAME__: JSON.stringify("Cluster Manager"),
-    __APP_VERSION__: JSON.stringify("1.6.0"),
+    __APP_VERSION__: JSON.stringify("1.7.0"),
+    __BUILD_NUMBER__: JSON.stringify(commitCount),
     __BUILD_HASH__: JSON.stringify(commitHash),
     __BUILD_DATE__: JSON.stringify(commitDate),
   },
