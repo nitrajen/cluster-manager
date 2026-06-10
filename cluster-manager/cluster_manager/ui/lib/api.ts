@@ -581,6 +581,82 @@ export function useNodeTypeRecommendations(includeNoIssues = false) {
   });
 }
 
+// Live OTel Metrics types
+export interface LiveNodeMetric {
+  cluster_id: string;
+  instance_id: string;
+  is_driver: boolean;
+  node_type: string | null;
+  ts: string;
+  cpu_user_percent: number | null;
+  cpu_system_percent: number | null;
+  cpu_wait_percent: number | null;
+  mem_used_percent: number | null;
+  mem_swap_percent: number | null;
+  network_sent_bytes: number | null;
+  network_received_bytes: number | null;
+  disk_used_percent: number | null;
+  load_1m: number | null;
+  load_5m: number | null;
+  load_15m: number | null;
+}
+
+export interface ClusterLiveStatus {
+  cluster_id: string;
+  node_count: number;
+  latest_ts: string;
+  avg_cpu: number | null;
+  avg_mem: number | null;
+  max_cpu: number | null;
+  max_mem: number | null;
+  is_stale: boolean;
+}
+
+export interface LiveAlert {
+  cluster_id: string;
+  instance_id: string;
+  is_driver: boolean;
+  alert_type: string;
+  value: number;
+  threshold: number;
+  ts: string;
+}
+
+export function useLiveActiveClusters() {
+  return useQuery({
+    queryKey: ["live-active-clusters"],
+    queryFn: () => fetchApi<ClusterLiveStatus[]>("/api/live-metrics/active"),
+    refetchInterval: 15000,
+  });
+}
+
+export function useLiveClusterMetrics(clusterId: string) {
+  return useQuery({
+    queryKey: ["live-cluster-metrics", clusterId],
+    queryFn: () => fetchApi<LiveNodeMetric[]>(`/api/live-metrics/${clusterId}`),
+    enabled: !!clusterId,
+    refetchInterval: 15000,
+  });
+}
+
+export function useLiveClusterHistory(clusterId: string, minutes = 60) {
+  return useQuery({
+    queryKey: ["live-cluster-history", clusterId, minutes],
+    queryFn: () =>
+      fetchApi<LiveNodeMetric[]>(`/api/live-metrics/${clusterId}/history?minutes=${minutes}`),
+    enabled: !!clusterId,
+    refetchInterval: 30000,
+  });
+}
+
+export function useLiveAlerts() {
+  return useQuery({
+    queryKey: ["live-alerts"],
+    queryFn: () => fetchApi<LiveAlert[]>("/api/live-metrics/alerts"),
+    refetchInterval: 15000,
+  });
+}
+
 // Workspace info
 export interface WorkspaceInfo {
   host: string;

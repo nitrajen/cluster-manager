@@ -130,7 +130,28 @@ async def _default_lifespan(app: FastAPI):
     app.state.config = config
     app.state.workspace_client = ws
 
+    # Initialize Lakebase connection pool for OTel metrics
+    from .db import pool as lakebase_pool
+    try:
+        lakebase_host = os.getenv("LAKEBASE_HOST", "")
+        lakebase_user = os.getenv("LAKEBASE_USER", "")
+        if lakebase_host and lakebase_user:
+            lakebase_pool.initialize(host=lakebase_host, user=lakebase_user)
+            lakebase_pool.ensure_schema()
+            logger.info("Lakebase pool initialized for OTel metrics")
+        else:
+            logger.info("Lakebase not configured (LAKEBASE_HOST/LAKEBASE_USER missing). Live metrics disabled.")
+    except Exception as e:
+        logger.warning(f"Lakebase initialization failed (non-fatal): {e}")
+
     yield
+
+    # Cleanup
+    try:
+        from .db import pool as lakebase_pool
+        lakebase_pool.close()
+    except Exception:
+        pass
 
 
 # --- Factory ---

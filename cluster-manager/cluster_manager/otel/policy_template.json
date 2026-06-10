@@ -1,0 +1,35 @@
+{
+  "name": "OTel Monitored Cluster Policy",
+  "description": "Cluster policy that enables real-time OTel metrics collection. Deploys OTel Collector on all nodes to push CPU/memory/disk/network metrics to the Cluster Manager app.",
+  "definition": {
+    "spark_env_vars.OTEL_ENDPOINT": {
+      "type": "fixed",
+      "value": "https://cluster-manager-1444828305810485.aws.databricksapps.com"
+    },
+    "spark_env_vars.OTEL_SP_CLIENT_ID": {
+      "type": "fixed",
+      "value": "<YOUR_SERVICE_PRINCIPAL_CLIENT_ID>"
+    },
+    "spark_env_vars.OTEL_SP_CLIENT_SECRET": {
+      "type": "fixed",
+      "value": "<YOUR_SERVICE_PRINCIPAL_SECRET>",
+      "hidden": true
+    },
+    "spark_env_vars.OTEL_TOKEN_ENDPOINT": {
+      "type": "fixed",
+      "value": "https://<YOUR_WORKSPACE>.cloud.databricks.com/oidc/v1/token"
+    },
+    "spark_env_vars.OTEL_VOLUME_PATH": {
+      "type": "fixed",
+      "value": "/Volumes/main/cluster_manager_app/binaries"
+    },
+    "spark_env_vars.OTEL_COLLECTION_INTERVAL": {
+      "type": "fixed",
+      "value": "15s"
+    },
+    "init_scripts.0.volumes.destination": {
+      "type": "fixed",
+      "value": "/Volumes/main/cluster_manager_app/scripts/init_script.sh"
+    }
+  }
+}
