@@ -79,23 +79,30 @@ def get_active_clusters(
         return []
 
     sql = """
-        WITH latest AS (
-            SELECT cluster_id, instance_id, is_driver,
-                   cpu_user_percent, cpu_system_percent, mem_used_percent, ts,
-                   ROW_NUMBER() OVER (PARTITION BY cluster_id, instance_id ORDER BY ts DESC) as rn
+        WITH recent AS (
+            SELECT cluster_id, instance_id,
+                   cpu_user_percent, cpu_system_percent, mem_used_percent, ts
             FROM node_metrics
-            WHERE ts > NOW() - INTERVAL '5 minutes'
+            WHERE ts > NOW() - INTERVAL '2 minutes'
+        ),
+        per_node AS (
+            SELECT cluster_id, instance_id,
+                   MAX(ts) as latest_ts,
+                   MAX(cpu_user_percent) FILTER (WHERE cpu_user_percent IS NOT NULL) as cpu_user,
+                   MAX(cpu_system_percent) FILTER (WHERE cpu_system_percent IS NOT NULL) as cpu_sys,
+                   MAX(mem_used_percent) FILTER (WHERE mem_used_percent IS NOT NULL) as mem_used
+            FROM recent
+            GROUP BY cluster_id, instance_id
         )
         SELECT
             cluster_id,
-            COUNT(DISTINCT instance_id) as node_count,
-            MAX(ts) as latest_ts,
-            AVG(COALESCE(cpu_user_percent, 0) + COALESCE(cpu_system_percent, 0)) as avg_cpu,
-            AVG(mem_used_percent) as avg_mem,
-            MAX(COALESCE(cpu_user_percent, 0) + COALESCE(cpu_system_percent, 0)) as max_cpu,
-            MAX(mem_used_percent) as max_mem
-        FROM latest
-        WHERE rn = 1
+            COUNT(*) as node_count,
+            MAX(latest_ts) as latest_ts,
+            AVG(COALESCE(cpu_user, 0) + COALESCE(cpu_sys, 0)) as avg_cpu,
+            AVG(mem_used) as avg_mem,
+            MAX(COALESCE(cpu_user, 0) + COALESCE(cpu_sys, 0)) as max_cpu,
+            MAX(mem_used) as max_mem
+        FROM per_node
         GROUP BY cluster_id
         ORDER BY latest_ts DESC
     """
