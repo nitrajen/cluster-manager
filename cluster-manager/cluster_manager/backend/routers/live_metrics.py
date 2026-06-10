@@ -102,6 +102,17 @@ def get_active_clusters(
                    MAX(mem_used_percent) FILTER (WHERE mem_used_percent IS NOT NULL) as mem_used
             FROM recent
             GROUP BY cluster_id, instance_id
+        ),
+        cluster_latest AS (
+            SELECT cluster_id, MAX(latest_ts) as max_ts
+            FROM per_node
+            GROUP BY cluster_id
+        ),
+        active_nodes AS (
+            SELECT pn.*
+            FROM per_node pn
+            JOIN cluster_latest cl ON pn.cluster_id = cl.cluster_id
+            WHERE pn.latest_ts > cl.max_ts - INTERVAL '2 minutes'
         )
         SELECT
             cluster_id,
@@ -111,7 +122,7 @@ def get_active_clusters(
             AVG(mem_used) as avg_mem,
             MAX(COALESCE(cpu_user, 0) + COALESCE(cpu_sys, 0)) as max_cpu,
             MAX(mem_used) as max_mem
-        FROM per_node
+        FROM active_nodes
         GROUP BY cluster_id
         ORDER BY latest_ts DESC
     """
