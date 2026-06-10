@@ -6,6 +6,8 @@ and stores metrics in Lakebase for real-time dashboard queries.
 
 from __future__ import annotations
 
+import gzip
+import json as json_lib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -169,10 +171,16 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
                     elif name == "system.memory.utilization":
                         row["mem_used_percent"] = value * 100 if value <= 1.0 else value
 
+                    # Memory usage (bytes) — accumulate by state to compute percent
+                    elif name == "system.memory.usage":
+                        state = _get_attribute(dp, "state")
+                        mem_key = f"_mem_{state}"
+                        row[mem_key] = value
+
                     elif name == "system.paging.utilization":
                         row["mem_swap_percent"] = value * 100 if value <= 1.0 else value
 
-                    elif name == "system.disk.utilization":
+                    elif name in ("system.disk.utilization", "system.disk.usage"):
                         row["disk_used_percent"] = value * 100 if value <= 1.0 else value
 
                     elif name == "system.cpu.load_average.1m":
@@ -181,6 +189,26 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
                         row["load_5m"] = value
                     elif name == "system.cpu.load_average.15m":
                         row["load_15m"] = value
+
+    # Post-process: compute memory percent from usage bytes if utilization wasn't available
+    for row in rows.values():
+        if row["mem_used_percent"] is None:
+            mem_used = row.pop("_mem_used", 0) or 0
+            mem_free = row.pop("_mem_free", 0) or 0
+            mem_inactive = row.pop("_mem_inactive", 0) or 0
+            mem_active = row.pop("_mem_active", 0) or 0
+            # Remove any other _mem_ keys
+            for k in list(row.keys()):
+                if k.startswith("_mem_"):
+                    row.pop(k)
+            total = mem_used + mem_free + mem_inactive + mem_active
+            if total > 0:
+                row["mem_used_percent"] = (mem_used / total) * 100
+        else:
+            # Clean up temp keys
+            for k in list(row.keys()):
+                if k.startswith("_mem_"):
+                    row.pop(k)
 
     return list(rows.values())
 
@@ -249,11 +277,15 @@ async def receive_metrics(
     if not await _validate_token(effective_auth):
         raise HTTPException(status_code=401, detail="Invalid or missing authorization")
 
-    # Parse body
+    # Parse body (handle gzip Content-Encoding from OTel Collector)
     try:
-        payload = await request.json()
+        body = await request.body()
+        content_encoding = request.headers.get("content-encoding", "")
+        if "gzip" in content_encoding:
+            body = gzip.decompress(body)
+        payload = json_lib.loads(body)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
 
     # Parse and insert
     try:

@@ -1,0 +1,49 @@
+receivers:
+  hostmetrics:
+    collection_interval: 15s
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+      memory:
+        metrics:
+          system.memory.utilization:
+            enabled: true
+      disk:
+      network:
+      load:
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 8
+
+  resource:
+    attributes:
+      - key: cluster_id
+        value: "local-laptop-001"
+        action: upsert
+      - key: instance_id
+        value: "macbook-laurent"
+        action: upsert
+      - key: is_driver
+        value: "true"
+        action: upsert
+      - key: node_type
+        value: "macbook-pro-m1"
+        action: upsert
+
+exporters:
+  otlphttp:
+    endpoint: http://localhost:8000/api/otel
+    encoding: json
+    headers:
+      Authorization: "Bearer mock-dev-token"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [resource, batch]
+      exporters: [otlphttp]
