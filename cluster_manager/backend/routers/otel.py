@@ -156,12 +156,22 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
                             "cpu_wait_percent": None,
                             "mem_used_percent": None,
                             "mem_swap_percent": None,
+                            "mem_available_bytes": None,
                             "network_sent_bytes": None,
                             "network_received_bytes": None,
+                            "network_errors": None,
+                            "network_drops": None,
                             "disk_used_percent": None,
+                            "disk_io_time_ms": None,
+                            "disk_ops_read": None,
+                            "disk_ops_write": None,
                             "load_1m": None,
                             "load_5m": None,
                             "load_15m": None,
+                            "paging_in": None,
+                            "paging_out": None,
+                            "process_count": None,
+                            "inodes_used_percent": None,
                         }
 
                     row = rows[row_key]
@@ -216,6 +226,48 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
                     elif name == "system.cpu.load_average.15m":
                         row["load_15m"] = value
 
+                    # Disk I/O time (milliseconds)
+                    elif name == "system.disk.io_time":
+                        row["disk_io_time_ms"] = (row["disk_io_time_ms"] or 0) + value
+
+                    # Disk operations (read/write)
+                    elif name == "system.disk.operations":
+                        direction = _get_attribute(dp, "direction")
+                        if direction == "read":
+                            row["disk_ops_read"] = (row["disk_ops_read"] or 0) + int(value)
+                        elif direction == "write":
+                            row["disk_ops_write"] = (row["disk_ops_write"] or 0) + int(value)
+
+                    # Network errors and drops
+                    elif name == "system.network.errors":
+                        row["network_errors"] = (row["network_errors"] or 0) + int(value)
+                    elif name == "system.network.dropped":
+                        row["network_drops"] = (row["network_drops"] or 0) + int(value)
+
+                    # Paging operations (swap in/out)
+                    elif name == "system.paging.operations":
+                        direction = _get_attribute(dp, "direction")
+                        if direction == "page_in":
+                            row["paging_in"] = (row["paging_in"] or 0) + int(value)
+                        elif direction == "page_out":
+                            row["paging_out"] = (row["paging_out"] or 0) + int(value)
+
+                    # Process count
+                    elif name == "system.processes.count":
+                        state = _get_attribute(dp, "status")
+                        if state is None or state == "running":
+                            row["process_count"] = (row["process_count"] or 0) + int(value)
+
+                    # Filesystem inodes
+                    elif name == "system.filesystem.inodes.usage":
+                        state = _get_attribute(dp, "state")
+                        if state == "used":
+                            inode_key = "_inodes_used"
+                            row[inode_key] = row.get(inode_key, 0) + value
+                        elif state == "free":
+                            inode_key = "_inodes_free"
+                            row[inode_key] = row.get(inode_key, 0) + value
+
     # Post-process
     for row in rows.values():
         # CPU: average across cores
@@ -242,6 +294,16 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
             total = mem_used + mem_free + mem_inactive + mem_active
         if total > 0 and (row["mem_used_percent"] is None or row["mem_used_percent"] == 0.0):
             row["mem_used_percent"] = (mem_used / total) * 100
+        # mem_available = free + cached + buffered
+        mem_avail = mem_free + mem_cached + mem_buffered
+        if mem_avail > 0:
+            row["mem_available_bytes"] = int(mem_avail)
+
+        # Inodes: compute percent from used/free
+        inodes_used = row.pop("_inodes_used", 0) or 0
+        inodes_free = row.pop("_inodes_free", 0) or 0
+        if inodes_used + inodes_free > 0:
+            row["inodes_used_percent"] = (inodes_used / (inodes_used + inodes_free)) * 100
 
     return list(rows.values())
 
@@ -250,15 +312,19 @@ INSERT_SQL = """
     INSERT INTO node_metrics (
         cluster_id, instance_id, is_driver, node_type, ts,
         cpu_user_percent, cpu_system_percent, cpu_wait_percent,
-        mem_used_percent, mem_swap_percent,
-        network_sent_bytes, network_received_bytes,
-        disk_used_percent, load_1m, load_5m, load_15m
+        mem_used_percent, mem_swap_percent, mem_available_bytes,
+        network_sent_bytes, network_received_bytes, network_errors, network_drops,
+        disk_used_percent, disk_io_time_ms, disk_ops_read, disk_ops_write,
+        load_1m, load_5m, load_15m,
+        paging_in, paging_out, process_count, inodes_used_percent
     ) VALUES (
         %(cluster_id)s, %(instance_id)s, %(is_driver)s, %(node_type)s, %(ts)s,
         %(cpu_user_percent)s, %(cpu_system_percent)s, %(cpu_wait_percent)s,
-        %(mem_used_percent)s, %(mem_swap_percent)s,
-        %(network_sent_bytes)s, %(network_received_bytes)s,
-        %(disk_used_percent)s, %(load_1m)s, %(load_5m)s, %(load_15m)s
+        %(mem_used_percent)s, %(mem_swap_percent)s, %(mem_available_bytes)s,
+        %(network_sent_bytes)s, %(network_received_bytes)s, %(network_errors)s, %(network_drops)s,
+        %(disk_used_percent)s, %(disk_io_time_ms)s, %(disk_ops_read)s, %(disk_ops_write)s,
+        %(load_1m)s, %(load_5m)s, %(load_15m)s,
+        %(paging_in)s, %(paging_out)s, %(process_count)s, %(inodes_used_percent)s
     )
 """
 

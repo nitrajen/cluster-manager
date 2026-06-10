@@ -118,13 +118,29 @@ receivers:
           system.memory.usage:
             enabled: true
       disk:
+        metrics:
+          system.disk.io_time:
+            enabled: true
+          system.disk.operations:
+            enabled: true
       filesystem:
         metrics:
           system.filesystem.utilization:
             enabled: true
+          system.filesystem.inodes.usage:
+            enabled: true
       network:
+        metrics:
+          system.network.errors:
+            enabled: true
+          system.network.dropped:
+            enabled: true
       load:
       paging:
+        metrics:
+          system.paging.operations:
+            enabled: true
+      processes:
 
 processors:
   batch:
