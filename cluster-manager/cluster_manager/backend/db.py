@@ -66,12 +66,20 @@ class LakebasePool:
         self._host = LAKEBASE_HOST
         self._database = LAKEBASE_DATABASE
         self._user = LAKEBASE_USER
+        self._cached_user_token: str | None = None
 
     def _generate_token(self) -> str:
-        """Generate OAuth token via Databricks CLI or SDK.
+        """Generate Lakebase OAuth token.
 
-        Tries CLI first (local dev), falls back to SDK (deployed app).
+        Order: static env var → CLI (local dev) → SDK → cached user token.
+        Note: SPs cannot connect to Lakebase directly. Only human user tokens work.
         """
+        # Fast path: static token from env (set by admin or token rotation job)
+        static_token = os.getenv("LAKEBASE_TOKEN", "")
+        if static_token:
+            logger.info("Using static LAKEBASE_TOKEN from environment")
+            return static_token
+
         endpoint_path = (
             f"projects/{LAKEBASE_PROJECT}/branches/{LAKEBASE_BRANCH}"
             f"/endpoints/{LAKEBASE_ENDPOINT}"
@@ -108,15 +116,44 @@ class LakebasePool:
         except Exception as sdk_err:
             logger.warning(f"SDK token generation failed: {sdk_err}")
 
-        # Last resort: use static LAKEBASE_TOKEN env var if set
-        static_token = os.getenv("LAKEBASE_TOKEN", "")
-        if static_token:
-            logger.info("Using static LAKEBASE_TOKEN from environment")
-            return static_token
+        # Use cached user token if available (set by first authenticated user request)
+        if self._cached_user_token:
+            logger.info("Using cached user token for Lakebase credential")
+            return self._generate_from_user_token(self._cached_user_token)
 
         raise RuntimeError(
-            f"Cannot generate Lakebase token (CLI, SDK, and env all failed)"
+            f"Cannot generate Lakebase token (CLI, SDK, and cache all failed)"
         )
+
+    def _generate_from_user_token(self, user_token: str) -> str:
+        """Use user's workspace OAuth token directly as Lakebase password.
+
+        Workspace OAuth tokens are accepted as Lakebase passwords when the
+        token's sub claim matches the connection username.
+        """
+        return user_token
+
+    def cache_user_token(self, token: str):
+        """Cache a user's workspace token for Lakebase credential generation.
+
+        Called when the first user-authenticated request arrives.
+        Only human user tokens work for Lakebase (SPs are not supported).
+        Extracts user email from token sub claim to set as LAKEBASE_USER.
+        """
+        import base64
+        self._cached_user_token = token
+        try:
+            parts = token.split(".")
+            if len(parts) == 3:
+                payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+                claims = json.loads(base64.b64decode(payload))
+                sub = claims.get("sub", "")
+                if "@" in sub and not self._user:
+                    self._user = sub
+                    logger.info(f"Set Lakebase user from token: {sub}")
+        except Exception:
+            pass
+        logger.info("Cached user token for Lakebase credential generation")
 
     def _ensure_token(self) -> str:
         """Get valid token, refreshing if needed."""

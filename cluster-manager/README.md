@@ -167,6 +167,74 @@ The app also exposes a **Managed MCP Server** for AI agent integration via Datab
 
 See [MCP Server Guide](docs/MCP_SERVER.md) for setup instructions.
 
+### Live Metrics Pipeline (OTel)
+
+Real-time CPU, memory, disk, and network metrics from cluster nodes via OpenTelemetry:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│   Client Workspace (e.g. DEMO-WEST)                             │
+│                                                                  │
+│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
+│   │   Driver    │  │  Worker 1   │  │  Worker N   │           │
+│   │  OTel Col.  │  │  OTel Col.  │  │  OTel Col.  │           │
+│   └──────┬──────┘  └──────┬──────┘  └──────┬──────┘           │
+└──────────┼─────────────────┼─────────────────┼──────────────────┘
+           │                 │                 │
+           │  M2M OAuth (SP client_credentials)│
+           ▼                 ▼                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│   Collector App (FEVM Workspace)                                 │
+│                                                                  │
+│   ┌───────────────────────────────────────────────────────────┐ │
+│   │  POST /api/otel/v1/metrics (OTLP/HTTP JSON)              │ │
+│   │  - Validates OAuth token                                   │ │
+│   │  - Parses OTLP metrics payload                            │ │
+│   │  - Batch inserts to Lakebase                              │ │
+│   └───────────────────────────┬───────────────────────────────┘ │
+│                               ▼                                  │
+│   ┌───────────────────────────────────────────────────────────┐ │
+│   │  Lakebase (PostgreSQL)                                    │ │
+│   │  - node_metrics table                                      │ │
+│   │  - Indexed by (cluster_id, ts DESC)                       │ │
+│   │  - 7-day retention                                         │ │
+│   └───────────────────────────┬───────────────────────────────┘ │
+│                               ▼                                  │
+│   ┌───────────────────────────────────────────────────────────┐ │
+│   │  GET /api/live-metrics/active                             │ │
+│   │  GET /api/live-metrics/{cluster_id}                       │ │
+│   │  GET /api/live-metrics/{cluster_id}/history               │ │
+│   │  GET /api/live-metrics/alerts                             │ │
+│   └───────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key Features:**
+- **Multi-workspace**: Any workspace can push metrics to the central collector
+- **Multi-node**: Every node (driver + workers) reports independently
+- **M2M OAuth**: Service Principal authentication (no static tokens)
+- **15-second resolution**: Near real-time visibility
+- **Zero-config init script**: Defaults embedded, just attach to cluster
+
+**Metrics Collected:**
+| Metric | Description |
+|--------|-------------|
+| `cpu_user_percent` | CPU user time |
+| `cpu_system_percent` | CPU system time |
+| `cpu_wait_percent` | CPU I/O wait |
+| `mem_used_percent` | Memory utilization |
+| `disk_used_percent` | Disk utilization |
+| `network_sent_bytes` | Network TX bytes |
+| `network_received_bytes` | Network RX bytes |
+| `load_1m` / `load_5m` / `load_15m` | System load averages |
+
+**Setup:**
+1. Upload init script to client workspace (DBFS or Workspace path)
+2. Add IP of client workspace to FEVM IP allowlist
+3. Attach init script to cluster — no env vars needed
+4. Bootstrap pool: `POST /api/otel/bootstrap` with user token
+5. Metrics flow automatically from cluster start
+
 ---
 
 ## Prerequisites
@@ -244,6 +312,16 @@ export CLUSTER_MANAGER_SQL_WAREHOUSE_ID=abc123def456
 | `/api/policies/{id}` | GET | Policy details |
 | `/api/policies/{id}/usage` | GET | Clusters using this policy |
 
+### Live Metrics (OTel)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/otel/v1/metrics` | POST | Receive OTLP/HTTP JSON metrics from collectors |
+| `/api/otel/bootstrap` | POST | Bootstrap Lakebase pool with user token |
+| `/api/live-metrics/active` | GET | List clusters currently reporting live metrics |
+| `/api/live-metrics/{id}` | GET | Latest metrics for all nodes in a cluster |
+| `/api/live-metrics/{id}/history` | GET | Time-series metrics (configurable window) |
+| `/api/live-metrics/alerts` | GET | Nodes exceeding CPU/memory/disk thresholds |
+
 ### MCP Server (AI Agent Integration)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -259,6 +337,9 @@ export CLUSTER_MANAGER_SQL_WAREHOUSE_ID=abc123def456
 - **Authorization**: Operations are limited to what the logged-in user can perform
 - **Safe Mode**: No permanent cluster deletion through this UI
 - **Audit**: All actions are logged through standard Databricks audit logs
+- **OTel M2M Auth**: Service Principal client credentials flow for cluster-to-app communication
+- **IP ACL**: FEVM workspace IP allowlist controls which client workspaces can push metrics
+- **Token Isolation**: SP tokens authenticate the push; Lakebase writes use cached human user tokens only
 
 ---
 
@@ -266,11 +347,16 @@ export CLUSTER_MANAGER_SQL_WAREHOUSE_ID=abc123def456
 
 Future enhancements for administrators:
 
+- [x] **Live metrics pipeline**: Real-time OTel metrics from cluster nodes via Lakebase
+- [x] **Multi-workspace support**: Any workspace can push metrics to central collector
+- [x] **MCP Server**: AI agent integration via JSON-RPC 2.0
+- [ ] **Live metrics dashboard**: Frontend charts for real-time node metrics
+- [ ] **Teams/Slack integration**: Conversational cluster management via chat
 - [ ] **Scheduled reports**: Weekly cost summary emails
 - [ ] **Budget alerts**: Notifications when DBU thresholds are exceeded
-- [ ] **Auto-stop policies**: Automatically stop idle clusters
+- [ ] **Auto-stop policies**: Automatically stop idle clusters based on live metrics
 - [ ] **Tag-based cost allocation**: Group costs by team/project tags
-- [ ] **Comparison views**: Month-over-month cost trends
+- [ ] **SP token rotation**: Automated credential rotation for OTel collectors
 
 ---
 

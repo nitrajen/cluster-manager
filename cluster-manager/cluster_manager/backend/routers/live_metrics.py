@@ -78,6 +78,15 @@ def get_active_clusters(
     if not pool.is_configured:
         return []
 
+    # Cache user token and bootstrap Lakebase pool if not ready
+    if x_forwarded_access_token:
+        pool.cache_user_token(x_forwarded_access_token)
+        if not pool._pool:
+            try:
+                pool._ensure_token()
+            except Exception:
+                pass
+
     sql = """
         WITH recent AS (
             SELECT cluster_id, instance_id,

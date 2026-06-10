@@ -25,6 +25,20 @@ class OtelMetricsResponse(BaseModel):
     pass
 
 
+def _jwt_sub(token: str) -> str:
+    """Extract sub claim from JWT without verification."""
+    import base64
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return ""
+        payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        claims = json_lib.loads(base64.b64decode(payload))
+        return claims.get("sub", "")
+    except Exception:
+        return ""
+
+
 def _extract_resource_attributes(resource: dict) -> dict[str, str]:
     """Extract key-value pairs from OTLP resource attributes array."""
     attrs = {}
@@ -198,25 +212,22 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
                     elif name == "system.cpu.load_average.15m":
                         row["load_15m"] = value
 
-    # Post-process: compute memory percent from usage bytes if utilization wasn't available
+    # Post-process: compute memory percent from usage bytes if utilization is missing or zero
     for row in rows.values():
-        if row["mem_used_percent"] is None:
-            mem_used = row.pop("_mem_used", 0) or 0
-            mem_free = row.pop("_mem_free", 0) or 0
-            mem_inactive = row.pop("_mem_inactive", 0) or 0
-            mem_active = row.pop("_mem_active", 0) or 0
-            # Remove any other _mem_ keys
-            for k in list(row.keys()):
-                if k.startswith("_mem_"):
-                    row.pop(k)
+        mem_used = row.pop("_mem_used", 0) or 0
+        mem_free = row.pop("_mem_free", 0) or 0
+        mem_inactive = row.pop("_mem_inactive", 0) or 0
+        mem_active = row.pop("_mem_active", 0) or 0
+        mem_cached = row.pop("_mem_cached", 0) or 0
+        mem_buffered = row.pop("_mem_buffered", 0) or 0
+        for k in list(row.keys()):
+            if k.startswith("_mem_"):
+                row.pop(k)
+        total = mem_used + mem_free + mem_cached + mem_buffered
+        if not total:
             total = mem_used + mem_free + mem_inactive + mem_active
-            if total > 0:
-                row["mem_used_percent"] = (mem_used / total) * 100
-        else:
-            # Clean up temp keys
-            for k in list(row.keys()):
-                if k.startswith("_mem_"):
-                    row.pop(k)
+        if total > 0 and (row["mem_used_percent"] is None or row["mem_used_percent"] == 0.0):
+            row["mem_used_percent"] = (mem_used / total) * 100
 
     return list(rows.values())
 
@@ -241,15 +252,16 @@ INSERT_SQL = """
 def _batch_insert(rows: list[dict], user_token: str | None = None):
     """Batch insert metric rows into Lakebase.
 
-    Uses pool if available. Falls back to direct connection with user_token
-    (for deployed apps where SP doesn't have Lakebase access).
+    Priority: pool → cached user token → incoming user token.
+    Lakebase doesn't support connection pooling from Databricks Apps,
+    so we fall back to per-request connections with cached user tokens.
     """
     if not rows:
         return
 
     import psycopg2
 
-    # Try pool first
+    # Try pool first (works in local dev)
     if pool._pool:
         with pool.get_conn() as conn:
             with conn.cursor() as cur:
@@ -257,16 +269,21 @@ def _batch_insert(rows: list[dict], user_token: str | None = None):
             conn.commit()
         return
 
-    # Fallback: direct connection with user token
-    if not user_token:
-        raise RuntimeError("Lakebase pool unavailable and no user token for fallback")
+    # Use cached user token (set by bootstrap or first user request)
+    token = pool._cached_user_token or user_token
+    if not token:
+        raise RuntimeError("Lakebase: no pool and no cached user token. Call /api/otel/bootstrap first.")
+
+    # Log which token source we're using
+    source = "cached" if pool._cached_user_token else "incoming"
+    logger.info(f"Lakebase insert: using {source} token ({len(token)} chars, sub={_jwt_sub(token)[:30]})")
 
     conn = psycopg2.connect(
         host=pool._host,
         port=5432,
         database=pool._database,
         user=pool._user,
-        password=user_token,
+        password=token,
         sslmode="require",
         connect_timeout=10,
     )
@@ -294,6 +311,53 @@ async def _validate_token(authorization: str | None) -> bool:
     token = authorization[7:]
     parts = token.split(".")
     return len(parts) == 3
+
+
+@router.post("/bootstrap")
+async def bootstrap_pool(
+    authorization: str | None = Header(default=None),
+    x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
+):
+    """Bootstrap Lakebase pool with a user token. Call once after deploy."""
+    token = x_forwarded_access_token
+    if not token and authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="No token provided")
+    sub = _jwt_sub(token)
+    if "@" not in sub:
+        raise HTTPException(status_code=400, detail=f"Need human user token (not SP). Got sub={sub}")
+
+    info = {
+        "token_sub": _jwt_sub(token),
+        "auth_sub": _jwt_sub(authorization[7:]) if authorization and authorization.startswith("Bearer ") else "none",
+        "xfwd_sub": _jwt_sub(x_forwarded_access_token) if x_forwarded_access_token else "none",
+    }
+
+    # Only cache if it's a real user token
+    if "@" in _jwt_sub(token):
+        pool.cache_user_token(token)
+    else:
+        # Maybe xfwd has the user token
+        if x_forwarded_access_token and "@" in _jwt_sub(x_forwarded_access_token):
+            pool.cache_user_token(x_forwarded_access_token)
+            token = x_forwarded_access_token
+            info["used_xfwd"] = True
+
+    # Test direct connection
+    import psycopg2
+    try:
+        conn = psycopg2.connect(
+            host=pool._host, port=5432, database=pool._database,
+            user=pool._user, password=token, sslmode="require", connect_timeout=10,
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM node_metrics")
+        count = cur.fetchone()[0]
+        conn.close()
+        return {"status": "direct_connection_ok", "rows": count, "has_pool": bool(pool._pool), **info}
+    except Exception as e:
+        return {"status": "direct_connection_failed", "error": str(e)[:200], "has_pool": False, **info}
 
 
 @router.post("/v1/metrics", response_model=OtelMetricsResponse)
@@ -330,6 +394,13 @@ async def receive_metrics(
     if effective_auth and effective_auth.startswith("Bearer "):
         raw_token = effective_auth[7:]
 
+    # Cache user token for Lakebase (only human user tokens, not SP tokens)
+    # Human user tokens have sub=email; SP tokens have sub=uuid
+    if x_forwarded_access_token and "@" in _jwt_sub(x_forwarded_access_token):
+        pool.cache_user_token(x_forwarded_access_token)
+    elif raw_token and "@" in _jwt_sub(raw_token):
+        pool.cache_user_token(raw_token)
+
     # Parse and insert
     try:
         rows = _parse_metrics_payload(payload)
@@ -338,6 +409,11 @@ async def receive_metrics(
             logger.debug(f"OTel: inserted {len(rows)} metric rows")
     except Exception as e:
         logger.error(f"OTel insert error: {e}")
-        raise HTTPException(status_code=500, detail=f"Storage error: {e}")
+        cached = pool._cached_user_token
+        detail = f"Storage error: {e}"
+        detail += f" | cached={'yes('+str(len(cached))+',sub='+_jwt_sub(cached)+')' if cached else 'NO'}"
+        detail += f" | raw_sub={_jwt_sub(raw_token) if raw_token else 'none'}"
+        detail += f" | pool_user={pool._user}"
+        raise HTTPException(status_code=500, detail=detail)
 
     return OtelMetricsResponse()
