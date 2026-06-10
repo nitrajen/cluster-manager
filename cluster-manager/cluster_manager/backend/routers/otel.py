@@ -180,8 +180,16 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
                     elif name == "system.paging.utilization":
                         row["mem_swap_percent"] = value * 100 if value <= 1.0 else value
 
-                    elif name in ("system.disk.utilization", "system.disk.usage"):
-                        row["disk_used_percent"] = value * 100 if value <= 1.0 else value
+                    elif name in ("system.disk.utilization", "system.disk.usage",
+                                  "system.filesystem.utilization"):
+                        # Skip virtual filesystems
+                        fs_type = _get_attribute(dp, "type") or ""
+                        if fs_type in ("devfs", "tmpfs", "autofs"):
+                            continue
+                        pct = value * 100 if value <= 1.0 else value
+                        # Keep max across real mountpoints
+                        if row["disk_used_percent"] is None or pct > row["disk_used_percent"]:
+                            row["disk_used_percent"] = pct
 
                     elif name == "system.cpu.load_average.1m":
                         row["load_1m"] = value

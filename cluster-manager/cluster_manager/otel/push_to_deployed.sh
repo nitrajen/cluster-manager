@@ -41,6 +41,10 @@ receivers:
           system.memory.utilization:
             enabled: true
       disk:
+      filesystem:
+        metrics:
+          system.filesystem.utilization:
+            enabled: true
       network:
       load:
 
