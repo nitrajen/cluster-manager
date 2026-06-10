@@ -35,12 +35,22 @@ class NodeMetric(BaseModel):
     cpu_wait_percent: float | None
     mem_used_percent: float | None
     mem_swap_percent: float | None
+    mem_available_bytes: int | None
     network_sent_bytes: int | None
     network_received_bytes: int | None
+    network_errors: int | None
+    network_drops: int | None
     disk_used_percent: float | None
+    disk_io_time_ms: float | None
+    disk_ops_read: int | None
+    disk_ops_write: int | None
     load_1m: float | None
     load_5m: float | None
     load_15m: float | None
+    paging_in: int | None
+    paging_out: int | None
+    process_count: int | None
+    inodes_used_percent: float | None
 
 
 class ClusterLiveStatus(BaseModel):

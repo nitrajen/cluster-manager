@@ -1,13 +1,18 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import {
+  Activity,
   AlertCircle,
   ArrowLeft,
   Calendar,
+  ChevronDown,
+  ChevronRight,
   Clock,
   Cpu,
   ExternalLink,
+  HardDrive,
   Loader2,
   MemoryStick,
+  Network,
   Play,
   RefreshCw,
   Settings,
@@ -21,6 +26,9 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -29,9 +37,11 @@ import {
 import { toast } from "sonner";
 
 import {
+  LiveNodeMetric,
   useCluster,
   useClusterEvents,
   useClusterMetrics,
+  useLiveClusterHistory,
   useStartCluster,
   useStopCluster,
 } from "@/lib/api";
@@ -285,6 +295,249 @@ function LiveMetricsSection({ clusterId, workspaceUrl }: { clusterId: string; wo
         </div>
         );
       })()}
+
+      <ExpandedMetricsSection clusterId={clusterId} minutes={minutes} />
+    </div>
+  );
+}
+
+interface AggregatedPoint {
+  timestamp: string;
+  disk_used_percent: number | null;
+  disk_io_time_ms: number | null;
+  disk_ops_read: number | null;
+  disk_ops_write: number | null;
+  network_sent_bytes: number | null;
+  network_received_bytes: number | null;
+  network_errors: number | null;
+  network_drops: number | null;
+  load_1m: number | null;
+  load_5m: number | null;
+  load_15m: number | null;
+  mem_swap_percent: number | null;
+  paging_in: number | null;
+  paging_out: number | null;
+  process_count: number | null;
+  inodes_used_percent: number | null;
+}
+
+function aggregateLiveMetrics(rows: LiveNodeMetric[]): AggregatedPoint[] {
+  const buckets = new Map<string, LiveNodeMetric[]>();
+  for (const row of rows) {
+    const key = new Date(row.ts).toISOString().slice(0, 16);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key)!.push(row);
+  }
+
+  const sorted = [...buckets.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  return sorted.map(([ts, nodes]) => {
+    const avg = (field: keyof LiveNodeMetric) => {
+      const vals = nodes.map((r) => r[field] as number | null).filter((v) => v != null);
+      return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
+    const sum = (field: keyof LiveNodeMetric) => {
+      const vals = nodes.map((r) => r[field] as number | null).filter((v) => v != null);
+      return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) : null;
+    };
+
+    return {
+      timestamp: ts,
+      disk_used_percent: avg("disk_used_percent"),
+      disk_io_time_ms: avg("disk_io_time_ms"),
+      disk_ops_read: sum("disk_ops_read"),
+      disk_ops_write: sum("disk_ops_write"),
+      network_sent_bytes: sum("network_sent_bytes"),
+      network_received_bytes: sum("network_received_bytes"),
+      network_errors: sum("network_errors"),
+      network_drops: sum("network_drops"),
+      load_1m: avg("load_1m"),
+      load_5m: avg("load_5m"),
+      load_15m: avg("load_15m"),
+      mem_swap_percent: avg("mem_swap_percent"),
+      paging_in: sum("paging_in"),
+      paging_out: sum("paging_out"),
+      process_count: sum("process_count"),
+      inodes_used_percent: avg("inodes_used_percent"),
+    };
+  });
+}
+
+function CollapsibleSection({
+  title,
+  icon: Icon,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  icon: React.ElementType;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="border-t pt-4">
+      <button
+        onClick={onToggle}
+        className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors w-full text-left"
+      >
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <Icon size={14} />
+        {title}
+      </button>
+      {open && <div className="mt-3 space-y-4">{children}</div>}
+    </div>
+  );
+}
+
+function ExpandedMetricsSection({ clusterId, minutes }: { clusterId: string; minutes: number }) {
+  const [diskOpen, setDiskOpen] = useState(false);
+  const [networkOpen, setNetworkOpen] = useState(false);
+  const [systemOpen, setSystemOpen] = useState(false);
+
+  const { data: rawData } = useLiveClusterHistory(clusterId, minutes);
+
+  const data = rawData && rawData.length > 0 ? aggregateLiveMetrics(rawData) : [];
+  const hasData = data.length > 0;
+
+  return (
+    <div className="space-y-2">
+      <CollapsibleSection title="Disk" icon={HardDrive} open={diskOpen} onToggle={() => setDiskOpen(!diskOpen)}>
+        {!hasData ? (
+          <p className="text-sm text-muted-foreground">No OTel disk data available.</p>
+        ) : (
+          <>
+            <div>
+              <h4 className="text-xs text-muted-foreground mb-1">Disk Usage (%)</h4>
+              <ResponsiveContainer width="100%" height={140}>
+                <AreaChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} unit="%" />
+                  <Tooltip labelFormatter={formatTime} formatter={(v: number) => [`${v.toFixed(1)}%`]} />
+                  <Area type="monotone" dataKey="disk_used_percent" fill="#ef4444" stroke="#ef4444" fillOpacity={0.3} name="Disk %" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              <h4 className="text-xs text-muted-foreground mb-1">Disk I/O (ops)</h4>
+              <ResponsiveContainer width="100%" height={140}>
+                <LineChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip labelFormatter={formatTime} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line type="monotone" dataKey="disk_ops_read" stroke="#3b82f6" dot={false} name="Read ops" />
+                  <Line type="monotone" dataKey="disk_ops_write" stroke="#f97316" dot={false} name="Write ops" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Network" icon={Network} open={networkOpen} onToggle={() => setNetworkOpen(!networkOpen)}>
+        {!hasData ? (
+          <p className="text-sm text-muted-foreground">No OTel network data available.</p>
+        ) : (
+          <>
+            <div>
+              <h4 className="text-xs text-muted-foreground mb-1">Network I/O (bytes)</h4>
+              <ResponsiveContainer width="100%" height={140}>
+                <AreaChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => formatBytes(v)} />
+                  <Tooltip labelFormatter={formatTime} formatter={(v: number) => [formatBytes(v)]} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Area type="monotone" dataKey="network_sent_bytes" fill="#3b82f6" stroke="#3b82f6" fillOpacity={0.3} name="Sent" />
+                  <Area type="monotone" dataKey="network_received_bytes" fill="#10b981" stroke="#10b981" fillOpacity={0.3} name="Received" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              <h4 className="text-xs text-muted-foreground mb-1">Errors &amp; Drops</h4>
+              <ResponsiveContainer width="100%" height={100}>
+                <LineChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip labelFormatter={formatTime} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line type="monotone" dataKey="network_errors" stroke="#ef4444" dot={false} name="Errors" />
+                  <Line type="monotone" dataKey="network_drops" stroke="#f59e0b" dot={false} name="Drops" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="System" icon={Activity} open={systemOpen} onToggle={() => setSystemOpen(!systemOpen)}>
+        {!hasData ? (
+          <p className="text-sm text-muted-foreground">No OTel system data available.</p>
+        ) : (
+          <>
+            <div>
+              <h4 className="text-xs text-muted-foreground mb-1">Load Average</h4>
+              <ResponsiveContainer width="100%" height={140}>
+                <LineChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip labelFormatter={formatTime} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line type="monotone" dataKey="load_1m" stroke="#8b5cf6" dot={false} name="1m" />
+                  <Line type="monotone" dataKey="load_5m" stroke="#6366f1" dot={false} name="5m" />
+                  <Line type="monotone" dataKey="load_15m" stroke="#a855f7" dot={false} name="15m" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              <h4 className="text-xs text-muted-foreground mb-1">Swap &amp; Paging</h4>
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip labelFormatter={formatTime} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line type="monotone" dataKey="mem_swap_percent" stroke="#ec4899" dot={false} name="Swap %" />
+                  <Line type="monotone" dataKey="paging_in" stroke="#14b8a6" dot={false} name="Page In" />
+                  <Line type="monotone" dataKey="paging_out" stroke="#f97316" dot={false} name="Page Out" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <h4 className="text-xs text-muted-foreground mb-1">Processes</h4>
+                <ResponsiveContainer width="100%" height={100}>
+                  <LineChart data={data}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <Tooltip labelFormatter={formatTime} />
+                    <Line type="monotone" dataKey="process_count" stroke="#0ea5e9" dot={false} name="Count" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div>
+                <h4 className="text-xs text-muted-foreground mb-1">Inodes Used (%)</h4>
+                <ResponsiveContainer width="100%" height={100}>
+                  <AreaChart data={data}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="timestamp" tickFormatter={formatTime} tick={{ fontSize: 10 }} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} unit="%" />
+                    <Tooltip labelFormatter={formatTime} formatter={(v: number) => [`${v.toFixed(1)}%`]} />
+                    <Area type="monotone" dataKey="inodes_used_percent" fill="#f59e0b" stroke="#f59e0b" fillOpacity={0.3} name="Inodes %" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </>
+        )}
+      </CollapsibleSection>
     </div>
   );
 }

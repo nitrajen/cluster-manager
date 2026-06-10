@@ -636,12 +636,22 @@ export interface LiveNodeMetric {
   cpu_wait_percent: number | null;
   mem_used_percent: number | null;
   mem_swap_percent: number | null;
+  mem_available_bytes: number | null;
   network_sent_bytes: number | null;
   network_received_bytes: number | null;
+  network_errors: number | null;
+  network_drops: number | null;
   disk_used_percent: number | null;
+  disk_io_time_ms: number | null;
+  disk_ops_read: number | null;
+  disk_ops_write: number | null;
   load_1m: number | null;
   load_5m: number | null;
   load_15m: number | null;
+  paging_in: number | null;
+  paging_out: number | null;
+  process_count: number | null;
+  inodes_used_percent: number | null;
 }
 
 export interface ClusterLiveStatus {
