@@ -92,7 +92,7 @@ def get_active_clusters(
             SELECT cluster_id, instance_id,
                    cpu_user_percent, cpu_system_percent, mem_used_percent, ts
             FROM node_metrics
-            WHERE ts > NOW() - INTERVAL '2 minutes'
+            WHERE ts > NOW() - INTERVAL '30 minutes'
         ),
         per_node AS (
             SELECT cluster_id, instance_id,

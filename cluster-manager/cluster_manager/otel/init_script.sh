@@ -83,11 +83,15 @@ else
 fi
 chmod +x "$INSTALL_DIR/otelcol-contrib"
 
-# Get OAuth token via SP M2M
-TOKEN=$(curl -s -X POST "${OTEL_TOKEN_ENDPOINT}" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials&client_id=${OTEL_SP_CLIENT_ID}&client_secret=${OTEL_SP_CLIENT_SECRET}&scope=all-apis" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+# Token refresh helper — generates fresh SP M2M token
+get_oauth_token() {
+  curl -s -X POST "${OTEL_TOKEN_ENDPOINT}" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=client_credentials&client_id=${OTEL_SP_CLIENT_ID}&client_secret=${OTEL_SP_CLIENT_SECRET}&scope=all-apis" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null
+}
+
+TOKEN=$(get_oauth_token)
 
 if [ -z "$TOKEN" ]; then
     echo "ERROR: Failed to get OAuth token. Collector will not start."
@@ -95,8 +99,10 @@ if [ -z "$TOKEN" ]; then
 fi
 echo "Got OAuth token (${#TOKEN} chars)"
 
-# Write config
-cat > "$INSTALL_DIR/config.yaml" << EOF
+# Write config helper — generates collector config with current token
+write_config() {
+  local token="$1"
+  cat > "$INSTALL_DIR/config.yaml" << CFGEOF
 receivers:
   hostmetrics:
     collection_interval: ${OTEL_INTERVAL}
@@ -145,7 +151,7 @@ exporters:
     endpoint: ${OTEL_ENDPOINT}/api/otel
     encoding: json
     headers:
-      Authorization: "Bearer ${TOKEN}"
+      Authorization: "Bearer ${token}"
     retry_on_failure:
       enabled: true
       initial_interval: 5s
@@ -157,13 +163,53 @@ service:
       receivers: [hostmetrics]
       processors: [resource, batch]
       exporters: [otlphttp]
-EOF
+CFGEOF
+}
 
-# Start collector
-"$INSTALL_DIR/otelcol-contrib" --config "$INSTALL_DIR/config.yaml" \
-  > /var/log/otelcol.log 2>&1 &
+write_config "$TOKEN"
+
+# Token refresh wrapper — restarts collector every 50 min with fresh token
+cat > "$INSTALL_DIR/run_with_refresh.sh" << 'RUNEOF'
+#!/bin/bash
+INSTALL_DIR="/opt/otelcol"
+REFRESH_SECONDS=3000  # 50 minutes
+
+while true; do
+  "$INSTALL_DIR/otelcol-contrib" --config "$INSTALL_DIR/config.yaml" &
+  COLLECTOR_PID=$!
+  echo "$(date) Collector started PID=$COLLECTOR_PID"
+
+  sleep $REFRESH_SECONDS
+
+  # Refresh token
+  NEW_TOKEN=$(curl -s -X POST "${OTEL_TOKEN_ENDPOINT}" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=client_credentials&client_id=${OTEL_SP_CLIENT_ID}&client_secret=${OTEL_SP_CLIENT_SECRET}&scope=all-apis" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+
+  if [ -n "$NEW_TOKEN" ]; then
+    # Rewrite config with new token
+    sed -i "s|Authorization: \"Bearer .*\"|Authorization: \"Bearer ${NEW_TOKEN}\"|" "$INSTALL_DIR/config.yaml"
+    echo "$(date) Token refreshed (${#NEW_TOKEN} chars)"
+  else
+    echo "$(date) WARNING: Token refresh failed, keeping old token"
+  fi
+
+  # Restart collector
+  kill $COLLECTOR_PID 2>/dev/null
+  wait $COLLECTOR_PID 2>/dev/null
+done
+RUNEOF
+chmod +x "$INSTALL_DIR/run_with_refresh.sh"
+
+# Export env vars for the refresh script
+export OTEL_TOKEN_ENDPOINT OTEL_SP_CLIENT_ID OTEL_SP_CLIENT_SECRET
+
+# Start collector with token refresh loop
+"$INSTALL_DIR/run_with_refresh.sh" > /var/log/otelcol.log 2>&1 &
 echo $! > "$INSTALL_DIR/collector.pid"
 
-echo "OTel Collector started (PID $(cat $INSTALL_DIR/collector.pid))"
+echo "OTel Collector started with token refresh (PID $(cat $INSTALL_DIR/collector.pid))"
 echo "  Cluster: $CLUSTER_ID | Instance: $INSTANCE_ID | Driver: $IS_DRIVER | Type: $NODE_TYPE"
 echo "  Endpoint: $OTEL_ENDPOINT | Interval: $OTEL_INTERVAL"
+echo "  Token refresh: every 50 minutes"
