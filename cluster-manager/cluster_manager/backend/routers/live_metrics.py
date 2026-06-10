@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from ..core import logger
 from ..db import pool
+
+
+def _get_conn_fallback(user_token: str | None = None):
+    """Get a DB connection — pool first, then direct with user token."""
+    if pool._pool:
+        return pool.get_conn()
+    if user_token:
+        return pool.get_conn_with_token(user_token)
+    return pool.get_conn()  # will raise if pool unavailable
 
 router = APIRouter(prefix="/api/live-metrics", tags=["live-metrics"])
 
@@ -61,7 +71,9 @@ def _rows_to_dicts(cursor) -> list[dict]:
 
 
 @router.get("/active", response_model=list[ClusterLiveStatus])
-def get_active_clusters():
+def get_active_clusters(
+    x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
+):
     """List clusters currently reporting live metrics."""
     if not pool.is_configured:
         return []
@@ -88,7 +100,7 @@ def get_active_clusters():
         ORDER BY latest_ts DESC
     """
     try:
-        with pool.get_conn() as conn:
+        with _get_conn_fallback(x_forwarded_access_token) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql)
                 rows = _rows_to_dicts(cur)
@@ -119,7 +131,10 @@ def get_active_clusters():
 
 
 @router.get("/{cluster_id}", response_model=list[NodeMetric])
-def get_cluster_metrics(cluster_id: str):
+def get_cluster_metrics(
+    cluster_id: str,
+    x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
+):
     """Get latest metrics for all nodes in a cluster (last 5 minutes)."""
     if not pool.is_configured:
         return []
@@ -131,7 +146,7 @@ def get_cluster_metrics(cluster_id: str):
         LIMIT 200
     """
     try:
-        with pool.get_conn() as conn:
+        with _get_conn_fallback(x_forwarded_access_token) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (cluster_id,))
                 rows = _rows_to_dicts(cur)
@@ -146,6 +161,7 @@ def get_cluster_metrics(cluster_id: str):
 def get_cluster_history(
     cluster_id: str,
     minutes: Annotated[int, Query(ge=1, le=1440)] = 60,
+    x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
 ):
     """Get time-series metrics for a cluster over a time window."""
     if not pool.is_configured:
@@ -158,7 +174,7 @@ def get_cluster_history(
         LIMIT 5000
     """
     try:
-        with pool.get_conn() as conn:
+        with _get_conn_fallback(x_forwarded_access_token) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (cluster_id, minutes))
                 rows = _rows_to_dicts(cur)
@@ -170,7 +186,9 @@ def get_cluster_history(
 
 
 @router.get("/alerts", response_model=list[LiveAlert])
-def get_alerts():
+def get_alerts(
+    x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
+):
     """Get nodes exceeding resource thresholds in the last 5 minutes."""
     if not pool.is_configured:
         return []
@@ -199,7 +217,7 @@ def get_alerts():
         ORDER BY ts DESC
     """
     try:
-        with pool.get_conn() as conn:
+        with _get_conn_fallback(x_forwarded_access_token) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (cpu_threshold, mem_threshold, disk_threshold))
                 rows = _rows_to_dicts(cur)

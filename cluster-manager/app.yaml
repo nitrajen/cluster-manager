@@ -34,3 +34,4 @@ user_api_scopes:
   - compute.clusters:manage
   - compute.cluster-policies:read
   - sql.statement-execution:execute
+

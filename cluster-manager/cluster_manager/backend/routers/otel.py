@@ -213,31 +213,61 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
     return list(rows.values())
 
 
-def _batch_insert(rows: list[dict]):
-    """Batch insert metric rows into Lakebase."""
+INSERT_SQL = """
+    INSERT INTO node_metrics (
+        cluster_id, instance_id, is_driver, node_type, ts,
+        cpu_user_percent, cpu_system_percent, cpu_wait_percent,
+        mem_used_percent, mem_swap_percent,
+        network_sent_bytes, network_received_bytes,
+        disk_used_percent, load_1m, load_5m, load_15m
+    ) VALUES (
+        %(cluster_id)s, %(instance_id)s, %(is_driver)s, %(node_type)s, %(ts)s,
+        %(cpu_user_percent)s, %(cpu_system_percent)s, %(cpu_wait_percent)s,
+        %(mem_used_percent)s, %(mem_swap_percent)s,
+        %(network_sent_bytes)s, %(network_received_bytes)s,
+        %(disk_used_percent)s, %(load_1m)s, %(load_5m)s, %(load_15m)s
+    )
+"""
+
+
+def _batch_insert(rows: list[dict], user_token: str | None = None):
+    """Batch insert metric rows into Lakebase.
+
+    Uses pool if available. Falls back to direct connection with user_token
+    (for deployed apps where SP doesn't have Lakebase access).
+    """
     if not rows:
         return
 
-    insert_sql = """
-        INSERT INTO node_metrics (
-            cluster_id, instance_id, is_driver, node_type, ts,
-            cpu_user_percent, cpu_system_percent, cpu_wait_percent,
-            mem_used_percent, mem_swap_percent,
-            network_sent_bytes, network_received_bytes,
-            disk_used_percent, load_1m, load_5m, load_15m
-        ) VALUES (
-            %(cluster_id)s, %(instance_id)s, %(is_driver)s, %(node_type)s, %(ts)s,
-            %(cpu_user_percent)s, %(cpu_system_percent)s, %(cpu_wait_percent)s,
-            %(mem_used_percent)s, %(mem_swap_percent)s,
-            %(network_sent_bytes)s, %(network_received_bytes)s,
-            %(disk_used_percent)s, %(load_1m)s, %(load_5m)s, %(load_15m)s
-        )
-    """
+    import psycopg2
 
-    with pool.get_conn() as conn:
+    # Try pool first
+    if pool._pool:
+        with pool.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(INSERT_SQL, rows)
+            conn.commit()
+        return
+
+    # Fallback: direct connection with user token
+    if not user_token:
+        raise RuntimeError("Lakebase pool unavailable and no user token for fallback")
+
+    conn = psycopg2.connect(
+        host=pool._host,
+        port=5432,
+        database=pool._database,
+        user=pool._user,
+        password=user_token,
+        sslmode="require",
+        connect_timeout=10,
+    )
+    try:
         with conn.cursor() as cur:
-            cur.executemany(insert_sql, rows)
+            cur.executemany(INSERT_SQL, rows)
         conn.commit()
+    finally:
+        conn.close()
 
 
 async def _validate_token(authorization: str | None) -> bool:
@@ -287,11 +317,16 @@ async def receive_metrics(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
 
+    # Extract raw token for Lakebase fallback
+    raw_token = None
+    if effective_auth and effective_auth.startswith("Bearer "):
+        raw_token = effective_auth[7:]
+
     # Parse and insert
     try:
         rows = _parse_metrics_payload(payload)
         if rows:
-            _batch_insert(rows)
+            _batch_insert(rows, user_token=raw_token)
             logger.debug(f"OTel: inserted {len(rows)} metric rows")
     except Exception as e:
         logger.error(f"OTel insert error: {e}")

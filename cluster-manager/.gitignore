@@ -53,6 +53,9 @@ bun.lockb
 .databricks/
 *.whl
 
+# OTel Collector binary (50MB+, local dev only)
+cluster_manager/otel/otelcol-contrib
+
 # OS
 .DS_Store
 Thumbs.db

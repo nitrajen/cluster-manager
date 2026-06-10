@@ -203,6 +203,26 @@ class LakebasePool:
         finally:
             self._pool.putconn(conn)
 
+    @contextmanager
+    def get_conn_with_token(self, token: str):
+        """Get an ad-hoc connection using a user-supplied token.
+
+        Used as fallback when the pool is unavailable (e.g., SP not authorized).
+        """
+        conn = psycopg2.connect(
+            host=self._host,
+            port=5432,
+            database=self._database,
+            user=self._user,
+            password=token,
+            sslmode="require",
+            connect_timeout=10,
+        )
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def close(self):
         """Close all connections."""
         if self._pool:

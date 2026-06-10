@@ -1,6 +1,13 @@
 bundle:
   name: cluster-manager
 
+sync:
+  exclude:
+    - cluster_manager/otel/otelcol-contrib
+    - node_modules/
+    - .venv/
+    - __pycache__/
+
 variables:
   app_name:
     description: Name of the Databricks App
