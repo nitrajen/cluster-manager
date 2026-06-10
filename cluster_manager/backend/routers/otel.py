@@ -72,8 +72,7 @@ def _timestamp_to_datetime(time_unix_nano: str | int) -> datetime:
 
 # Mapping from OTel metric names to our DB columns
 METRIC_COLUMN_MAP = {
-    "system.cpu.utilization": None,  # needs state attribute
-    "system.cpu.time": None,  # needs state attribute
+    "system.cpu.utilization": None,  # needs state attribute, averaged across cores
     "system.memory.utilization": "mem_used_percent",
     "system.paging.utilization": "mem_swap_percent",
     "system.network.io": None,  # needs direction attribute
@@ -167,13 +166,17 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
 
                     row = rows[row_key]
 
-                    # CPU metrics need state attribute
-                    if name in ("system.cpu.utilization", "system.cpu.time"):
+                    # CPU utilization (0-1 per core per state) — average across cores
+                    if name == "system.cpu.utilization":
                         state = _get_attribute(dp, "state")
                         col = CPU_STATE_COLUMN.get(state)
                         if col:
-                            # utilization is 0-1, convert to percent
-                            row[col] = value * 100 if value <= 1.0 else value
+                            pct = value * 100 if value <= 1.0 else value
+                            # Average across cores: accumulate then divide
+                            acc_key = f"_cpu_{state}_sum"
+                            cnt_key = f"_cpu_{state}_cnt"
+                            row[acc_key] = row.get(acc_key, 0) + pct
+                            row[cnt_key] = row.get(cnt_key, 0) + 1
 
                     # Network needs direction attribute
                     elif name == "system.network.io":
@@ -213,8 +216,18 @@ def _parse_metrics_payload(payload: dict) -> list[dict]:
                     elif name == "system.cpu.load_average.15m":
                         row["load_15m"] = value
 
-    # Post-process: compute memory percent from usage bytes if utilization is missing or zero
+    # Post-process
     for row in rows.values():
+        # CPU: average across cores
+        for state, col in CPU_STATE_COLUMN.items():
+            acc_key = f"_cpu_{state}_sum"
+            cnt_key = f"_cpu_{state}_cnt"
+            if acc_key in row and row[cnt_key] > 0:
+                row[col] = row[acc_key] / row[cnt_key]
+            row.pop(acc_key, None)
+            row.pop(cnt_key, None)
+
+        # Memory: compute percent from usage bytes if utilization missing
         mem_used = row.pop("_mem_used", 0) or 0
         mem_free = row.pop("_mem_free", 0) or 0
         mem_inactive = row.pop("_mem_inactive", 0) or 0
