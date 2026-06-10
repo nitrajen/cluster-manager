@@ -16,6 +16,12 @@ targets:
     workspace:
       root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/dev
 
+  fevm:
+    mode: development
+    workspace:
+      host: https://fevm-serverless-stable-3n0ihb.cloud.databricks.com
+      root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/dev
+
   prod:
     mode: production
     workspace:

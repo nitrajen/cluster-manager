@@ -10,7 +10,23 @@ env:
   - name: CLUSTER_MANAGER_APP_NAME
     value: "Cluster Manager"
   - name: DATABRICKS_HOST
-    value: "https://e2-demo-field-eng.cloud.databricks.com"
+    value: "https://fevm-serverless-stable-3n0ihb.cloud.databricks.com"
+  - name: LAKEBASE_HOST
+    value: "ep-quiet-butterfly-d2kf7bwg.database.us-east-1.cloud.databricks.com"
+  - name: LAKEBASE_DATABASE
+    value: "otel_metrics"
+  - name: LAKEBASE_USER
+    value: "laurent.prat@databricks.com"
+  - name: LAKEBASE_PROJECT
+    value: "cluster-metrics"
+  - name: LAKEBASE_BRANCH
+    value: "production"
+  - name: LAKEBASE_ENDPOINT
+    value: "primary"
+  - name: DATABRICKS_PROFILE
+    value: ""
+  - name: OTEL_AUTH_DISABLED
+    value: "true"
 
 # Request additional OAuth scopes for the user token
 user_api_scopes:

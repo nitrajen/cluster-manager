@@ -68,29 +68,55 @@ class LakebasePool:
         self._user = LAKEBASE_USER
 
     def _generate_token(self) -> str:
-        """Generate OAuth token via Databricks CLI."""
+        """Generate OAuth token via Databricks CLI or SDK.
+
+        Tries CLI first (local dev), falls back to SDK (deployed app).
+        """
         endpoint_path = (
             f"projects/{LAKEBASE_PROJECT}/branches/{LAKEBASE_BRANCH}"
             f"/endpoints/{LAKEBASE_ENDPOINT}"
         )
+
+        # Try CLI first (works for local dev with profiles)
         try:
-            result = subprocess.run(
-                [
-                    "databricks", "postgres", "generate-database-credential",
-                    endpoint_path,
-                    "--profile", DATABRICKS_PROFILE,
-                    "--output", "json",
-                ],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"CLI error: {result.stderr}")
-            data = json.loads(result.stdout)
-            return data["token"]
+            cmd = ["databricks", "postgres", "generate-database-credential",
+                   endpoint_path, "--output", "json"]
+            if DATABRICKS_PROFILE:
+                cmd.extend(["--profile", DATABRICKS_PROFILE])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                return data["token"]
+            logger.warning(f"CLI token generation failed: {result.stderr[:100]}")
         except FileNotFoundError:
-            raise RuntimeError(
-                "databricks CLI not found. Install: brew install databricks"
+            logger.info("databricks CLI not found, trying SDK approach")
+
+        # Fallback: use Databricks SDK (for deployed apps with SP auth)
+        try:
+            from databricks.sdk import WorkspaceClient
+            ws = WorkspaceClient(
+                profile=DATABRICKS_PROFILE if DATABRICKS_PROFILE else None
             )
+            resp = ws.api_client.do(
+                "POST",
+                "/api/2.0/postgres/credentials",
+                body={"endpoint": endpoint_path},
+            )
+            if isinstance(resp, dict):
+                return resp.get("token", resp.get("password", ""))
+            raise RuntimeError(f"Unexpected response: {resp}")
+        except Exception as sdk_err:
+            logger.warning(f"SDK token generation failed: {sdk_err}")
+
+        # Last resort: use static LAKEBASE_TOKEN env var if set
+        static_token = os.getenv("LAKEBASE_TOKEN", "")
+        if static_token:
+            logger.info("Using static LAKEBASE_TOKEN from environment")
+            return static_token
+
+        raise RuntimeError(
+            f"Cannot generate Lakebase token (CLI, SDK, and env all failed)"
+        )
 
     def _ensure_token(self) -> str:
         """Get valid token, refreshing if needed."""
@@ -114,17 +140,23 @@ class LakebasePool:
                 self._pool.closeall()
             except Exception:
                 pass
-        self._pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=2,
-            maxconn=10,
-            host=self._host,
-            port=5432,
-            database=self._database,
-            user=self._user,
-            password=self._token,
-            sslmode="require",
-        )
-        logger.info(f"Lakebase pool created: {self._host}/{self._database}")
+        try:
+            self._pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=10,
+                host=self._host,
+                port=5432,
+                database=self._database,
+                user=self._user,
+                password=self._token,
+                sslmode="require",
+                connect_timeout=10,
+            )
+            logger.info(f"Lakebase pool created: {self._host}/{self._database}")
+        except Exception as e:
+            logger.error(f"Lakebase pool creation failed: {e}")
+            self._pool = None
+            raise
 
     def initialize(self, host: str | None = None, user: str | None = None):
         """Initialize pool. Call during app startup."""
@@ -152,9 +184,19 @@ class LakebasePool:
     @contextmanager
     def get_conn(self):
         """Get a connection from the pool. Auto-refreshes token if needed."""
-        self._ensure_token()
+        try:
+            self._ensure_token()
+        except Exception as e:
+            raise RuntimeError(f"Lakebase token refresh failed: {e}")
+        # If pool is None (previous connection attempt failed), force retry
         if not self._pool:
-            raise RuntimeError("Lakebase pool not initialized")
+            self._token_expiry = 0  # force re-generation
+            try:
+                self._ensure_token()
+            except Exception as e:
+                raise RuntimeError(f"Lakebase pool retry failed: {e}")
+        if not self._pool:
+            raise RuntimeError("Lakebase pool unavailable")
         conn = self._pool.getconn()
         try:
             yield conn

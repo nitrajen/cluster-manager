@@ -213,16 +213,19 @@ def _batch_insert(rows: list[dict]):
 
 
 async def _validate_token(authorization: str | None) -> bool:
-    """Validate Bearer token. For now, check it's a valid JWT format.
+    """Validate Bearer token.
 
-    In production, validate against Databricks OAuth endpoint.
+    In dev mode (OTEL_AUTH_DISABLED=true), accepts any non-empty token.
+    In production, validates JWT format (3 dot-separated parts).
     """
+    import os
+    if os.getenv("OTEL_AUTH_DISABLED", "").lower() == "true":
+        return bool(authorization)
     if not authorization:
         return False
     if not authorization.startswith("Bearer "):
         return False
     token = authorization[7:]
-    # Basic validation: JWT has 3 parts
     parts = token.split(".")
     return len(parts) == 3
 
@@ -231,6 +234,7 @@ async def _validate_token(authorization: str | None) -> bool:
 async def receive_metrics(
     request: Request,
     authorization: str | None = Header(default=None),
+    x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
 ):
     """Receive OTLP/HTTP JSON metrics from OTel Collectors on cluster nodes.
 
@@ -240,8 +244,9 @@ async def receive_metrics(
     if not pool.is_configured:
         raise HTTPException(status_code=503, detail="Lakebase not configured")
 
-    # Validate auth
-    if not await _validate_token(authorization):
+    # Validate auth — accept either Authorization header (direct) or X-Forwarded-Access-Token (via app proxy)
+    effective_auth = authorization or (f"Bearer {x_forwarded_access_token}" if x_forwarded_access_token else None)
+    if not await _validate_token(effective_auth):
         raise HTTPException(status_code=401, detail="Invalid or missing authorization")
 
     # Parse body
