@@ -346,12 +346,17 @@ function ClusterDetail({ clusterId }: { clusterId: string }) {
 function LiveMetricsPage() {
   const { data: clusters, isLoading: loadingClusters } = useLiveActiveClusters();
   const { data: alerts } = useLiveAlerts();
-  const { setSelectedIds } = useMonitoredClusters();
+  const { setSelectedIds, selectAll } = useMonitoredClusters();
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
 
   const handleClusterSelect = (id: string) => {
-    setSelectedCluster(id);
-    setSelectedIds([id]);
+    if (selectedCluster === id) {
+      setSelectedCluster(null);
+      selectAll();
+    } else {
+      setSelectedCluster(id);
+      setSelectedIds([id]);
+    }
   };
 
   return (
