@@ -56,6 +56,9 @@ bun.lockb
 # OTel Collector binary (50MB+, local dev only)
 cluster_manager/otel/otelcol-contrib
 
+# OTel admin config (contains secrets/profiles)
+cluster_manager/otel/config.env
+
 # OS
 .DS_Store
 Thumbs.db

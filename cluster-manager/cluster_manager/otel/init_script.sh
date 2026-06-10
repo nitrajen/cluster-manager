@@ -10,6 +10,37 @@ OTEL_INTERVAL="${OTEL_INTERVAL:-15s}"
 OTEL_SP_CLIENT_ID="${OTEL_SP_CLIENT_ID:-YOUR_SP_CLIENT_ID}"
 OTEL_SP_CLIENT_SECRET="${OTEL_SP_CLIENT_SECRET:-YOUR_SP_CLIENT_SECRET}"
 OTEL_TOKEN_ENDPOINT="${OTEL_TOKEN_ENDPOINT:-https://YOUR-WORKSPACE.cloud.databricks.com/oidc/v1/token}"
+OTEL_SECRET_SCOPE="${OTEL_SECRET_SCOPE:-otel-collector}"
+OTEL_SECRET_KEY="${OTEL_SECRET_KEY:-sp-client-secret}"
+
+# If no secret provided via env, fetch from Databricks Secret Scope
+if [ -z "${OTEL_SP_CLIENT_SECRET}" ] || [ "${OTEL_SP_CLIENT_SECRET}" = "YOUR_SP_CLIENT_SECRET" ]; then
+  if [ -n "${DATABRICKS_HOST:-}" ]; then
+    _TOKEN=$(python3 -c "
+import json, os
+for p in ['/databricks/.credentials', '/tmp/.databricks_token']:
+    try:
+        d = json.load(open(p)); print(d.get('token','')); break
+    except: pass
+else:
+    print(os.environ.get('DATABRICKS_TOKEN',''))
+" 2>/dev/null)
+    if [ -n "$_TOKEN" ]; then
+      OTEL_SP_CLIENT_SECRET=$(curl -s \
+        -H "Authorization: Bearer $_TOKEN" \
+        "${DATABRICKS_HOST}/api/2.0/secrets/get?scope=${OTEL_SECRET_SCOPE}&key=${OTEL_SECRET_KEY}" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))" 2>/dev/null)
+      if [ -n "$OTEL_SP_CLIENT_SECRET" ]; then
+        echo "Fetched SP secret from scope ${OTEL_SECRET_SCOPE}"
+      fi
+    fi
+  fi
+fi
+
+if [ -z "$OTEL_SP_CLIENT_SECRET" ] || [ "$OTEL_SP_CLIENT_SECRET" = "YOUR_SP_CLIENT_SECRET" ]; then
+  echo "ERROR: No SP secret available (env var or scope). Collector will not start."
+  exit 0
+fi
 
 # Cluster metadata
 CLUSTER_ID="${DB_CLUSTER_ID:-unknown}"

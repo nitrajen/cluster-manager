@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gzip
 import json as json_lib
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -295,13 +296,27 @@ def _batch_insert(rows: list[dict], user_token: str | None = None):
         conn.close()
 
 
+_ALLOWED_SP_IDS: set[str] | None = None
+
+
+def _get_allowed_sp_ids() -> set[str]:
+    """Lazy-load allowed SP IDs from env var."""
+    global _ALLOWED_SP_IDS
+    if _ALLOWED_SP_IDS is None:
+        raw = os.getenv("OTEL_ALLOWED_SP_IDS", "")
+        _ALLOWED_SP_IDS = {s.strip() for s in raw.split(",") if s.strip()}
+    return _ALLOWED_SP_IDS
+
+
 async def _validate_token(authorization: str | None) -> bool:
-    """Validate Bearer token.
+    """Validate Bearer token with SP allowlist.
 
     In dev mode (OTEL_AUTH_DISABLED=true), accepts any non-empty token.
-    In production, validates JWT format (3 dot-separated parts).
+    In production:
+      - Validates JWT format (3 dot-separated parts)
+      - Human users (sub contains @) are always allowed
+      - Service Principals must be in OTEL_ALLOWED_SP_IDS allowlist
     """
-    import os
     if os.getenv("OTEL_AUTH_DISABLED", "").lower() == "true":
         return bool(authorization)
     if not authorization:
@@ -310,7 +325,17 @@ async def _validate_token(authorization: str | None) -> bool:
         return False
     token = authorization[7:]
     parts = token.split(".")
-    return len(parts) == 3
+    if len(parts) != 3:
+        return False
+    allowed = _get_allowed_sp_ids()
+    if allowed:
+        sub = _jwt_sub(token)
+        if not sub:
+            return False
+        if "@" in sub:
+            return True
+        return sub in allowed
+    return True
 
 
 @router.post("/bootstrap")
@@ -377,6 +402,13 @@ async def receive_metrics(
     # Validate auth — accept either Authorization header (direct) or X-Forwarded-Access-Token (via app proxy)
     effective_auth = authorization or (f"Bearer {x_forwarded_access_token}" if x_forwarded_access_token else None)
     if not await _validate_token(effective_auth):
+        # Distinguish 401 (no/bad token) from 403 (valid token, SP not allowed)
+        if effective_auth and effective_auth.startswith("Bearer "):
+            token = effective_auth[7:]
+            sub = _jwt_sub(token)
+            allowed = _get_allowed_sp_ids()
+            if sub and "@" not in sub and allowed and sub not in allowed:
+                raise HTTPException(status_code=403, detail=f"SP {sub} not in allowlist")
         raise HTTPException(status_code=401, detail="Invalid or missing authorization")
 
     # Parse body (handle gzip Content-Encoding from OTel Collector)
