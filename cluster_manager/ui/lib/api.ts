@@ -17,6 +17,8 @@ export interface ClusterSummary {
   uptime_minutes: number;
   estimated_dbu_per_hour: number;
   policy_id: string | null;
+  workspace_name: string | null;
+  workspace_url: string | null;
 }
 
 export interface ClusterDetail extends ClusterSummary {
@@ -220,31 +222,38 @@ export function useClusters(state?: string, clusterIds?: string[]) {
   });
 }
 
-export function useCluster(clusterId: string) {
+export function useCluster(clusterId: string, workspaceUrl?: string | null) {
+  const params = workspaceUrl ? `?workspace_url=${encodeURIComponent(workspaceUrl)}` : "";
   return useQuery({
-    queryKey: ["cluster", clusterId],
-    queryFn: () => fetchApi<ClusterDetail>(`/api/clusters/${clusterId}`),
+    queryKey: ["cluster", clusterId, workspaceUrl],
+    queryFn: () => fetchApi<ClusterDetail>(`/api/clusters/${clusterId}${params}`),
     enabled: !!clusterId,
-    refetchInterval: 10000, // Refresh every 10 seconds
+    refetchInterval: 10000,
   });
 }
 
-export function useClusterEvents(clusterId: string, limit = 50) {
+export function useClusterEvents(clusterId: string, limit = 50, workspaceUrl?: string | null) {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (workspaceUrl) params.set("workspace_url", workspaceUrl);
   return useQuery({
-    queryKey: ["cluster-events", clusterId, limit],
+    queryKey: ["cluster-events", clusterId, limit, workspaceUrl],
     queryFn: () =>
       fetchApi<{ events: ClusterEvent[]; total_count: number }>(
-        `/api/clusters/${clusterId}/events?limit=${limit}`
+        `/api/clusters/${clusterId}/events?${params}`
       ),
     enabled: !!clusterId,
   });
 }
 
-export function useClusterMetrics(clusterId: string, minutes = 60) {
+export function useClusterMetrics(clusterId: string, minutes = 60, workspaceUrl?: string | null) {
+  const params = new URLSearchParams();
+  params.set("minutes", String(minutes));
+  if (workspaceUrl) params.set("workspace_url", workspaceUrl);
   return useQuery({
-    queryKey: ["cluster-metrics", clusterId, minutes],
+    queryKey: ["cluster-metrics", clusterId, minutes, workspaceUrl],
     queryFn: () =>
-      fetchApi<ClusterMetricsResponse>(`/api/clusters/${clusterId}/metrics?minutes=${minutes}`),
+      fetchApi<ClusterMetricsResponse>(`/api/clusters/${clusterId}/metrics?${params}`),
     enabled: !!clusterId,
     refetchInterval: 60000,
   });
@@ -330,8 +339,10 @@ export function useStartCluster() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (clusterId: string) =>
-      fetchApi<ClusterActionResponse>(`/api/clusters/${clusterId}/start`, { method: "POST" }),
+    mutationFn: ({ clusterId, workspaceUrl }: { clusterId: string; workspaceUrl?: string | null }) => {
+      const params = workspaceUrl ? `?workspace_url=${encodeURIComponent(workspaceUrl)}` : "";
+      return fetchApi<ClusterActionResponse>(`/api/clusters/${clusterId}/start${params}`, { method: "POST" });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["clusters"] });
       queryClient.invalidateQueries({ queryKey: ["metrics-summary"] });
@@ -343,8 +354,10 @@ export function useStopCluster() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (clusterId: string) =>
-      fetchApi<ClusterActionResponse>(`/api/clusters/${clusterId}/stop`, { method: "POST" }),
+    mutationFn: ({ clusterId, workspaceUrl }: { clusterId: string; workspaceUrl?: string | null }) => {
+      const params = workspaceUrl ? `?workspace_url=${encodeURIComponent(workspaceUrl)}` : "";
+      return fetchApi<ClusterActionResponse>(`/api/clusters/${clusterId}/stop${params}`, { method: "POST" });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["clusters"] });
       queryClient.invalidateQueries({ queryKey: ["metrics-summary"] });

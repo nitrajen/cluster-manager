@@ -96,9 +96,9 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function LiveMetricsSection({ clusterId }: { clusterId: string }) {
+function LiveMetricsSection({ clusterId, workspaceUrl }: { clusterId: string; workspaceUrl?: string }) {
   const [minutes, setMinutes] = useState(60);
-  const { data, isLoading } = useClusterMetrics(clusterId, minutes);
+  const { data, isLoading } = useClusterMetrics(clusterId, minutes, workspaceUrl);
 
   if (isLoading) {
     return (
@@ -291,9 +291,10 @@ function LiveMetricsSection({ clusterId }: { clusterId: string }) {
 
 function ClusterDetailPage() {
   const { clusterId } = Route.useParams();
+  const { workspace_url: workspaceUrl } = Route.useSearch();
   const router = useRouter();
-  const { data: cluster, isLoading, error, refetch } = useCluster(clusterId);
-  const { data: eventsData } = useClusterEvents(clusterId, 20);
+  const { data: cluster, isLoading, error, refetch } = useCluster(clusterId, workspaceUrl);
+  const { data: eventsData } = useClusterEvents(clusterId, 20, workspaceUrl);
   const startCluster = useStartCluster();
   const stopCluster = useStopCluster();
 
@@ -325,14 +326,14 @@ function ClusterDetailPage() {
   const colors = stateColors[cluster.state] || stateColors.TERMINATED;
 
   const handleStart = () => {
-    startCluster.mutate(clusterId, {
+    startCluster.mutate({ clusterId, workspaceUrl }, {
       onSuccess: (data) => toast.success(data.message),
       onError: (error) => toast.error(`Failed to start: ${error.message}`),
     });
   };
 
   const handleStop = () => {
-    stopCluster.mutate(clusterId, {
+    stopCluster.mutate({ clusterId, workspaceUrl }, {
       onSuccess: (data) => toast.success(data.message),
       onError: (error) => toast.error(`Failed to stop: ${error.message}`),
     });
@@ -439,7 +440,7 @@ function ClusterDetailPage() {
           </div>
 
           {/* Live Metrics - only for running clusters */}
-          {isRunning && <LiveMetricsSection clusterId={clusterId} />}
+          {isRunning && <LiveMetricsSection clusterId={clusterId} workspaceUrl={workspaceUrl} />}
 
           {/* Timing */}
           <div className="bg-card rounded-lg border p-6">
@@ -542,4 +543,7 @@ function ClusterDetailPage() {
 
 export const Route = createFileRoute("/_sidebar/clusters/$clusterId")({
   component: ClusterDetailPage,
+  validateSearch: (search: Record<string, unknown>): { workspace_url?: string } => ({
+    workspace_url: (search.workspace_url as string) || undefined,
+  }),
 });

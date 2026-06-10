@@ -3,8 +3,9 @@
 from datetime import datetime, timezone
 from typing import Annotated
 
+from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.compute import ClusterDetails, State
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..core import Dependency, execute_sql, get_warehouse_id, logger
 from ..models import (
@@ -20,6 +21,7 @@ from ..models import (
     ClusterSummary,
     NodeMetricsSnapshot,
 )
+from ..workspace_registry import registry
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -164,73 +166,96 @@ def list_clusters(
     cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
     limit: Annotated[int, Query(ge=1, le=500, description="Maximum number of clusters to return")] = 100,
 ) -> list[ClusterSummary]:
-    """List clusters in the workspace.
+    """List clusters from all registered workspaces.
 
-    Returns a summary of each cluster including state, configuration, and estimated DBU usage.
-    Limited to first N clusters for performance (default 100).
+    Aggregates clusters from the local workspace and all registered remote workspaces.
+    Each cluster is tagged with its source workspace_name/workspace_url.
     """
-    logger.info(f"Listing clusters - limit: {limit}")
+    logger.info(f"Listing clusters - limit: {limit}, multi_workspace: {registry.is_multi_workspace}")
 
-    try:
-        # Iterate over clusters with limit for performance
-        # Use page_size=limit to minimize API round-trips
-        clusters = []
-        for i, cluster in enumerate(ws.clusters.list(page_size=limit)):
-            if i >= limit:
-                logger.info(f"Reached limit of {limit} clusters")
-                break
-            clusters.append(cluster)
+    summaries: list[ClusterSummary] = []
 
-        logger.info(f"Retrieved {len(clusters)} clusters")
+    if registry.is_multi_workspace:
+        # Fetch from all registered workspaces in parallel
+        results = registry.fetch_clusters_from_all(local_ws=ws)
+        for ws_name, ws_url, cluster in results:
+            summary = _cluster_to_summary(cluster)
+            summary.workspace_name = ws_name
+            summary.workspace_url = ws_url
+            summaries.append(summary)
+        logger.info(f"Aggregated {len(summaries)} clusters from {len(registry.entries) + 1} workspace(s)")
+    else:
+        # Single workspace mode (backward compatible)
+        try:
+            for i, cluster in enumerate(ws.clusters.list(page_size=limit)):
+                if i >= limit:
+                    break
+                summaries.append(_cluster_to_summary(cluster))
+            logger.info(f"Retrieved {len(summaries)} clusters from local workspace")
+        except Exception as e:
+            logger.error(f"Failed to list clusters: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to list clusters: {e}")
 
-        # Filter by cluster_ids if provided
-        if cluster_ids:
-            id_set = set(cluster_ids)
-            clusters = [c for c in clusters if c.cluster_id in id_set]
+    # Filter by cluster_ids if provided
+    if cluster_ids:
+        id_set = set(cluster_ids)
+        summaries = [s for s in summaries if s.cluster_id in id_set]
 
-        summaries = [_cluster_to_summary(c) for c in clusters]
+    # Filter by state if provided
+    if state:
+        summaries = [s for s in summaries if s.state == state]
 
-        # Filter by state if provided
-        if state:
-            summaries = [s for s in summaries if s.state == state]
+    # Sort by state (running first) then by name
+    state_order = {
+        ClusterState.RUNNING: 0,
+        ClusterState.PENDING: 1,
+        ClusterState.RESTARTING: 2,
+        ClusterState.RESIZING: 3,
+        ClusterState.TERMINATING: 4,
+        ClusterState.TERMINATED: 5,
+        ClusterState.ERROR: 6,
+        ClusterState.UNKNOWN: 7,
+    }
+    summaries.sort(key=lambda s: (state_order.get(s.state, 99), s.cluster_name))
 
-        # Sort by state (running first) then by name
-        state_order = {
-            ClusterState.RUNNING: 0,
-            ClusterState.PENDING: 1,
-            ClusterState.RESTARTING: 2,
-            ClusterState.RESIZING: 3,
-            ClusterState.TERMINATING: 4,
-            ClusterState.TERMINATED: 5,
-            ClusterState.ERROR: 6,
-            ClusterState.UNKNOWN: 7,
-        }
-        summaries.sort(key=lambda s: (state_order.get(s.state, 99), s.cluster_name))
+    # Apply limit
+    summaries = summaries[:limit]
+    logger.info(f"Returning {len(summaries)} clusters")
+    return summaries
 
-        logger.info(f"Returning {len(summaries)} clusters")
-        return summaries
-    except Exception as e:
-        error_msg = f"Failed to list clusters: {e}"
-        logger.error(error_msg)
-        raise HTTPException(status_code=500, detail=error_msg)
+
+def _resolve_ws(ws: WorkspaceClient, workspace_url: str | None) -> WorkspaceClient:
+    """Resolve the correct workspace client (remote or local)."""
+    if workspace_url:
+        client = registry.get_client(workspace_url)
+        if client:
+            return client
+        logger.warning(f"Workspace {workspace_url} not in registry, using local")
+    return ws
 
 
 @router.get("/{cluster_id}", response_model=ClusterDetail)
 def get_cluster(
     cluster_id: str,
     ws: Dependency.Client,
+    workspace_url: Annotated[str | None, Query(description="Source workspace URL")] = None,
 ) -> ClusterDetail:
     """Get detailed information about a specific cluster."""
-    logger.info(f"Getting cluster {cluster_id}")
+    logger.info(f"Getting cluster {cluster_id} (workspace: {workspace_url})")
+    target_ws = _resolve_ws(ws, workspace_url)
 
     try:
-        cluster = ws.clusters.get(cluster_id)
-        return _cluster_to_detail(cluster)
+        cluster = target_ws.clusters.get(cluster_id)
+        detail = _cluster_to_detail(cluster)
+        detail.workspace_url = workspace_url
+        if workspace_url:
+            entry = registry.get_entry_by_url(workspace_url)
+            detail.workspace_name = entry.name if entry else None
+        return detail
     except Exception as e:
         error_type = type(e).__name__
         error_msg = str(e)
         logger.error(f"Failed to get cluster {cluster_id}: [{error_type}] {error_msg}")
-        # Return more detailed error to help debug
         raise HTTPException(
             status_code=404,
             detail=f"Cluster not found: {cluster_id}. Error: {error_msg}"
@@ -241,16 +266,14 @@ def get_cluster(
 def start_cluster(
     cluster_id: str,
     ws: Dependency.Client,
+    workspace_url: Annotated[str | None, Query(description="Source workspace URL")] = None,
 ) -> ClusterActionResponse:
-    """Start a terminated or stopped cluster.
-
-    The cluster will transition to PENDING state and then to RUNNING.
-    """
-    logger.info(f"Starting cluster {cluster_id}")
+    """Start a terminated or stopped cluster."""
+    logger.info(f"Starting cluster {cluster_id} (workspace: {workspace_url})")
+    target_ws = _resolve_ws(ws, workspace_url)
 
     try:
-        # Get current state first
-        cluster = ws.clusters.get(cluster_id)
+        cluster = target_ws.clusters.get(cluster_id)
         if cluster.state == State.RUNNING:
             return ClusterActionResponse(
                 success=True,
@@ -264,7 +287,7 @@ def start_cluster(
                 cluster_id=cluster_id,
             )
 
-        ws.clusters.start(cluster_id)
+        target_ws.clusters.start(cluster_id)
         return ClusterActionResponse(
             success=True,
             message="Cluster start initiated",
@@ -279,20 +302,14 @@ def start_cluster(
 def stop_cluster(
     cluster_id: str,
     ws: Dependency.Client,
+    workspace_url: Annotated[str | None, Query(description="Source workspace URL")] = None,
 ) -> ClusterActionResponse:
-    """Stop a running cluster.
-
-    SAFE MODE: This is a non-destructive action. The cluster configuration is preserved
-    and can be started again later.
-
-    Note: This permanently terminates the cluster. Use with caution.
-    Any running jobs will be interrupted.
-    """
-    logger.info(f"Stopping cluster {cluster_id}")
+    """Stop a running cluster."""
+    logger.info(f"Stopping cluster {cluster_id} (workspace: {workspace_url})")
+    target_ws = _resolve_ws(ws, workspace_url)
 
     try:
-        # Get current state first
-        cluster = ws.clusters.get(cluster_id)
+        cluster = target_ws.clusters.get(cluster_id)
         if cluster.state == State.TERMINATED:
             return ClusterActionResponse(
                 success=True,
@@ -306,8 +323,7 @@ def stop_cluster(
                 cluster_id=cluster_id,
             )
 
-        # Use permanent_delete=False to keep cluster configuration
-        ws.clusters.delete(cluster_id)
+        target_ws.clusters.delete(cluster_id)
         return ClusterActionResponse(
             success=True,
             message="Cluster stop initiated",
@@ -322,16 +338,16 @@ def stop_cluster(
 def get_cluster_events(
     cluster_id: str,
     ws: Dependency.Client,
+    workspace_url: Annotated[str | None, Query(description="Source workspace URL")] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> ClusterEventsResponse:
     """Get recent events for a cluster."""
-    logger.info(f"Getting events for cluster {cluster_id}")
+    logger.info(f"Getting events for cluster {cluster_id} (workspace: {workspace_url})")
+    target_ws = _resolve_ws(ws, workspace_url)
 
     try:
-        # ws.clusters.events() returns a generator of ClusterEvent objects
-        # Use page_size=limit to minimize API round-trips
         events = []
-        for i, event in enumerate(ws.clusters.events(cluster_id=cluster_id, page_size=limit)):
+        for i, event in enumerate(target_ws.clusters.events(cluster_id=cluster_id, page_size=limit)):
             if i >= limit:
                 break
             events.append(ClusterEvent(
@@ -343,7 +359,7 @@ def get_cluster_events(
 
         return ClusterEventsResponse(
             events=events,
-            next_page_token=None,  # Generator doesn't provide pagination info
+            next_page_token=None,
             total_count=len(events),
         )
     except Exception as e:
@@ -356,15 +372,17 @@ def get_cluster_metrics(
     cluster_id: str,
     ws: Dependency.Client,
     config: Dependency.Config,
+    workspace_url: Annotated[str | None, Query(description="Source workspace URL")] = None,
     minutes: Annotated[int, Query(ge=5, le=360)] = 60,
 ) -> ClusterMetricsResponse:
     """Get live CPU and memory metrics from system.compute.node_timeline.
 
     Returns per-minute aggregated time series and current per-node breakdown.
     """
-    logger.info(f"Getting {minutes}min metrics for cluster {cluster_id}")
+    logger.info(f"Getting {minutes}min metrics for cluster {cluster_id} (workspace: {workspace_url})")
+    target_ws = _resolve_ws(ws, workspace_url)
 
-    warehouse_id = get_warehouse_id(ws, config)
+    warehouse_id = get_warehouse_id(target_ws, config)
 
     sql = f"""
     SELECT
@@ -385,7 +403,7 @@ def get_cluster_metrics(
     """
 
     try:
-        rows = execute_sql(ws, warehouse_id, sql)
+        rows = execute_sql(target_ws, warehouse_id, sql)
     except HTTPException:
         raise
     except Exception as e:

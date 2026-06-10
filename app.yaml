@@ -29,6 +29,8 @@ env:
     value: "false"
   - name: OTEL_ALLOWED_SP_IDS
     value: "682e907b-4c32-463f-8b49-01617b942f17"
+  - name: REGISTERED_WORKSPACES
+    value: ""
 
 # Request additional OAuth scopes for the user token
 user_api_scopes:

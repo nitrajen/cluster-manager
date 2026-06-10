@@ -104,25 +104,31 @@ function ClusterCard({ cluster }: { cluster: ClusterSummary }) {
   );
 
   const handleStart = () => {
-    startCluster.mutate(cluster.cluster_id, {
-      onSuccess: (data) => {
-        toast.success(data.message);
-      },
-      onError: (error) => {
-        toast.error(`Failed to start cluster: ${error.message}`);
-      },
-    });
+    startCluster.mutate(
+      { clusterId: cluster.cluster_id, workspaceUrl: cluster.workspace_url },
+      {
+        onSuccess: (data) => {
+          toast.success(data.message);
+        },
+        onError: (error) => {
+          toast.error(`Failed to start cluster: ${error.message}`);
+        },
+      }
+    );
   };
 
   const handleStop = () => {
-    stopCluster.mutate(cluster.cluster_id, {
-      onSuccess: (data) => {
-        toast.success(data.message);
-      },
-      onError: (error) => {
-        toast.error(`Failed to stop cluster: ${error.message}`);
-      },
-    });
+    stopCluster.mutate(
+      { clusterId: cluster.cluster_id, workspaceUrl: cluster.workspace_url },
+      {
+        onSuccess: (data) => {
+          toast.success(data.message);
+        },
+        onError: (error) => {
+          toast.error(`Failed to stop cluster: ${error.message}`);
+        },
+      }
+    );
   };
 
   const workersDisplay = cluster.autoscale
@@ -137,13 +143,21 @@ function ClusterCard({ cluster }: { cluster: ClusterSummary }) {
             <Link
               to="/clusters/$clusterId"
               params={{ clusterId: cluster.cluster_id }}
+              search={{ workspace_url: cluster.workspace_url || undefined }}
               className="font-medium hover:text-primary truncate block"
             >
               {cluster.cluster_name}
             </Link>
-            <p className="text-xs text-muted-foreground truncate mt-0.5">
-              {cluster.creator_user_name || "Unknown creator"}
-            </p>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              {cluster.workspace_name && (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                  {cluster.workspace_name}
+                </span>
+              )}
+              <p className="text-xs text-muted-foreground truncate">
+                {cluster.creator_user_name || "Unknown creator"}
+              </p>
+            </div>
           </div>
           <StatusBadge state={cluster.state} />
         </div>
@@ -239,7 +253,7 @@ function ClusterTableRow({
   const handleStart = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    startCluster.mutate(cluster.cluster_id, {
+    startCluster.mutate({ clusterId: cluster.cluster_id, workspaceUrl: cluster.workspace_url }, {
       onSuccess: (data) => {
         toast.success(data.message);
       },
@@ -252,7 +266,7 @@ function ClusterTableRow({
   const handleStop = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    stopCluster.mutate(cluster.cluster_id, {
+    stopCluster.mutate({ clusterId: cluster.cluster_id, workspaceUrl: cluster.workspace_url }, {
       onSuccess: (data) => {
         toast.success(data.message);
       },

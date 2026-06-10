@@ -5,6 +5,7 @@ import os
 from pydantic import BaseModel
 
 from ..core import Dependency, create_router, logger
+from ..workspace_registry import registry
 
 router = create_router()
 
@@ -81,3 +82,20 @@ def get_workspace_info(ws: Dependency.Client) -> WorkspaceInfo:
 
     logger.info(f"Returning workspace info: host={host}, org_id={org_id}")
     return WorkspaceInfo(host=host, org_id=org_id)
+
+
+class RegisteredWorkspace(BaseModel):
+    """Public info about a registered workspace (no secrets)."""
+    url: str
+    name: str
+    last_poll_status: str
+    last_poll_at: float
+
+
+@router.get("/workspaces", response_model=list[RegisteredWorkspace])
+def list_registered_workspaces() -> list[RegisteredWorkspace]:
+    """List all registered client workspaces."""
+    return [
+        RegisteredWorkspace(**entry.info)
+        for entry in registry.entries
+    ]

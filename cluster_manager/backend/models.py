@@ -65,6 +65,8 @@ class ClusterSummary(BaseModel):
     uptime_minutes: int = 0
     estimated_dbu_per_hour: float = 0.0
     policy_id: str | None = None
+    workspace_name: str | None = None
+    workspace_url: str | None = None
 
 
 class ClusterDetail(ClusterSummary):

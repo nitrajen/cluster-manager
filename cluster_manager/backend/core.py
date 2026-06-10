@@ -130,6 +130,11 @@ async def _default_lifespan(app: FastAPI):
     app.state.config = config
     app.state.workspace_client = ws
 
+    # Initialize multi-workspace registry
+    from .workspace_registry import registry
+    registry.load_from_env()
+    app.state.workspace_registry = registry
+
     # Initialize Lakebase connection pool for OTel metrics
     from .db import pool as lakebase_pool
     try:
