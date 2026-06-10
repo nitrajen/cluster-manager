@@ -227,11 +227,20 @@ function ClusterDetail({ clusterId }: { clusterId: string }) {
   }
 
   // Group by instance
-  const byInstance = new Map<string, LiveNodeMetric[]>();
+  const byInstanceAll = new Map<string, LiveNodeMetric[]>();
   for (const m of history) {
     const key = m.instance_id;
-    if (!byInstance.has(key)) byInstance.set(key, []);
-    byInstance.get(key)!.push(m);
+    if (!byInstanceAll.has(key)) byInstanceAll.set(key, []);
+    byInstanceAll.get(key)!.push(m);
+  }
+
+  // Filter to active nodes only (latest reading within 2 min of cluster's latest)
+  const clusterLatestTs = Math.max(...Array.from(byInstanceAll.values()).map(ms => new Date(ms[ms.length - 1].ts).getTime()));
+  const staleCutoff = clusterLatestTs - 2 * 60 * 1000;
+  const byInstance = new Map<string, LiveNodeMetric[]>();
+  for (const [id, ms] of byInstanceAll) {
+    const nodeLatest = new Date(ms[ms.length - 1].ts).getTime();
+    if (nodeLatest >= staleCutoff) byInstance.set(id, ms);
   }
 
   // Separate driver and workers
