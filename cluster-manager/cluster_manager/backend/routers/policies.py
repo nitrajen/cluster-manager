@@ -2,8 +2,9 @@
 
 import json
 from datetime import datetime, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from ..core import Dependency, logger
 from ..models import (
@@ -27,12 +28,24 @@ def _ms_to_datetime(ms: int | None) -> datetime | None:
 
 
 @router.get("", response_model=list[ClusterPolicySummary])
-def list_policies(ws: Dependency.Client) -> list[ClusterPolicySummary]:
+def list_policies(
+    ws: Dependency.Client,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to policies used by these cluster IDs")] = None,
+) -> list[ClusterPolicySummary]:
     """List all cluster policies in the workspace."""
     logger.info("Listing cluster policies")
 
     try:
         policies = list(ws.cluster_policies.list())
+
+        # If filtering by cluster_ids, find which policies those clusters use
+        if cluster_ids:
+            id_set = set(cluster_ids)
+            relevant_policy_ids = set()
+            for cluster in ws.clusters.list():
+                if cluster.cluster_id in id_set and cluster.policy_id:
+                    relevant_policy_ids.add(cluster.policy_id)
+            policies = [p for p in policies if p.policy_id in relevant_policy_ids]
 
         summaries = []
         for policy in policies:

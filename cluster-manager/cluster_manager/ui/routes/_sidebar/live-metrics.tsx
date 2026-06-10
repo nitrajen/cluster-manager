@@ -10,6 +10,7 @@ import {
   useLiveAlerts,
   useLiveClusterHistory,
 } from "@/lib/api";
+import { useMonitoredClusters } from "@/lib/monitored-clusters-context";
 import { cn } from "@/lib/utils";
 
 function formatTimestamp(ts: string): string {
@@ -345,7 +346,13 @@ function ClusterDetail({ clusterId }: { clusterId: string }) {
 function LiveMetricsPage() {
   const { data: clusters, isLoading: loadingClusters } = useLiveActiveClusters();
   const { data: alerts } = useLiveAlerts();
+  const { setSelectedIds } = useMonitoredClusters();
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
+
+  const handleClusterSelect = (id: string) => {
+    setSelectedCluster(id);
+    setSelectedIds([id]);
+  };
 
   return (
     <div>
@@ -415,7 +422,7 @@ function LiveMetricsPage() {
         <>
           <ClusterTable
             clusters={clusters}
-            onSelect={setSelectedCluster}
+            onSelect={handleClusterSelect}
             selectedId={selectedCluster}
           />
           {selectedCluster && <ClusterDetail clusterId={selectedCluster} />}

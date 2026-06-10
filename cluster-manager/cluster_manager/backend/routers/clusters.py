@@ -161,6 +161,7 @@ def _cluster_to_detail(cluster: ClusterDetails) -> ClusterDetail:
 def list_clusters(
     ws: Dependency.Client,
     state: Annotated[ClusterState | None, Query(description="Filter by cluster state")] = None,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
     limit: Annotated[int, Query(ge=1, le=500, description="Maximum number of clusters to return")] = 100,
 ) -> list[ClusterSummary]:
     """List clusters in the workspace.
@@ -181,6 +182,12 @@ def list_clusters(
             clusters.append(cluster)
 
         logger.info(f"Retrieved {len(clusters)} clusters")
+
+        # Filter by cluster_ids if provided
+        if cluster_ids:
+            id_set = set(cluster_ids)
+            clusters = [c for c in clusters if c.cluster_id in id_set]
+
         summaries = [_cluster_to_summary(c) for c in clusters]
 
         # Filter by state if provided

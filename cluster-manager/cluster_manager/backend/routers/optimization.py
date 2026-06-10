@@ -46,7 +46,7 @@ def _get_warehouse_id(ws, config) -> str:
     return get_warehouse_id(ws, config)
 
 
-def _list_clusters_limited(ws, limit: int = 100) -> list:
+def _list_clusters_limited(ws, limit: int = 100, cluster_ids: list[str] | None = None) -> list:
     """List clusters with a limit to avoid timeout on large workspaces."""
     clusters = []
     for i, cluster in enumerate(ws.clusters.list()):
@@ -54,6 +54,9 @@ def _list_clusters_limited(ws, limit: int = 100) -> list:
         if i + 1 >= limit:
             logger.info(f"Reached cluster limit of {limit}")
             break
+    if cluster_ids:
+        id_set = set(cluster_ids)
+        clusters = [c for c in clusters if c.cluster_id in id_set]
     return clusters
 
 
@@ -89,11 +92,12 @@ def _calculate_efficiency(actual_dbu: float, workers: int, uptime_hours: float) 
 def get_optimization_summary(
     ws: Dependency.Client,
     config: Dependency.Config,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
 ) -> OptimizationSummary:
     """Get summary of optimization opportunities across all clusters."""
     logger.info("Getting optimization summary")
 
-    clusters = _list_clusters_limited(ws, limit=100)
+    clusters = _list_clusters_limited(ws, limit=100, cluster_ids=cluster_ids)
 
     oversized_count = 0
     underutilized_count = 0
@@ -142,6 +146,7 @@ def get_oversized_clusters(
     ws: Dependency.Client,
     config: Dependency.Config,
     min_workers: Annotated[int, Query(ge=1)] = 10,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
 ) -> list[OversizedClusterAnalysis]:
     """Get clusters that are potentially oversized based on configuration.
 
@@ -149,7 +154,7 @@ def get_oversized_clusters(
     """
     logger.info(f"Getting oversized clusters (min_workers={min_workers})")
 
-    clusters = _list_clusters_limited(ws, limit=100)
+    clusters = _list_clusters_limited(ws, limit=100, cluster_ids=cluster_ids)
     oversized = []
 
     for cluster in clusters:
@@ -197,6 +202,7 @@ def get_oversized_clusters(
 def get_job_recommendations(
     ws: Dependency.Client,
     config: Dependency.Config,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
 ) -> list[JobClusterRecommendation]:
     """Get recommendations for optimizing cluster usage patterns.
 
@@ -207,7 +213,7 @@ def get_job_recommendations(
     """
     logger.info("Getting job cluster recommendations")
 
-    clusters = _list_clusters_limited(ws, limit=100)
+    clusters = _list_clusters_limited(ws, limit=100, cluster_ids=cluster_ids)
     recommendations = []
 
     # Group clusters by creator
@@ -324,6 +330,7 @@ def get_job_recommendations(
 def get_schedule_recommendations(
     ws: Dependency.Client,
     config: Dependency.Config,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
 ) -> list[ScheduleOptimizationRecommendation]:
     """Get recommendations for optimizing cluster start/stop schedules.
 
@@ -331,7 +338,7 @@ def get_schedule_recommendations(
     """
     logger.info("Getting schedule optimization recommendations")
 
-    clusters = _list_clusters_limited(ws, limit=100)
+    clusters = _list_clusters_limited(ws, limit=100, cluster_ids=cluster_ids)
     recommendations = []
 
     for cluster in clusters:
@@ -671,6 +678,7 @@ def get_spark_config_recommendations(
     ws: Dependency.Client,
     config: Dependency.Config,
     include_no_issues: Annotated[bool, Query()] = False,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
 ) -> list[ClusterSparkConfigAnalysis]:
     """Analyze Spark configurations across all clusters and provide recommendations.
 
@@ -688,7 +696,7 @@ def get_spark_config_recommendations(
     """
     logger.info("Analyzing Spark configurations for all clusters")
 
-    clusters = _list_clusters_limited(ws, limit=100)
+    clusters = _list_clusters_limited(ws, limit=100, cluster_ids=cluster_ids)
     analyses = []
 
     for cluster in clusters:
@@ -991,6 +999,7 @@ def get_cost_recommendations(
     ws: Dependency.Client,
     config: Dependency.Config,
     include_no_issues: Annotated[bool, Query()] = False,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
 ) -> list[ClusterCostAnalysis]:
     """Analyze cost optimization opportunities across all clusters.
 
@@ -1006,7 +1015,7 @@ def get_cost_recommendations(
     """
     logger.info("Analyzing cost optimization for all clusters")
 
-    clusters = _list_clusters_limited(ws, limit=100)
+    clusters = _list_clusters_limited(ws, limit=100, cluster_ids=cluster_ids)
     analyses = []
 
     for cluster in clusters:
@@ -1240,6 +1249,7 @@ def get_autoscaling_recommendations(
     ws: Dependency.Client,
     config: Dependency.Config,
     include_no_issues: Annotated[bool, Query()] = False,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
 ) -> list[ClusterAutoscalingAnalysis]:
     """Analyze autoscaling configuration across all clusters and provide recommendations.
 
@@ -1256,7 +1266,7 @@ def get_autoscaling_recommendations(
     """
     logger.info("Analyzing autoscaling configurations for all clusters")
 
-    clusters = _list_clusters_limited(ws, limit=100)
+    clusters = _list_clusters_limited(ws, limit=100, cluster_ids=cluster_ids)
     analyses = []
 
     for cluster in clusters:
@@ -1597,6 +1607,7 @@ def get_node_type_recommendations(
     ws: Dependency.Client,
     config: Dependency.Config,
     include_no_issues: Annotated[bool, Query()] = False,
+    cluster_ids: Annotated[list[str] | None, Query(description="Filter to specific cluster IDs")] = None,
 ) -> list[ClusterNodeTypeAnalysis]:
     """Analyze node type configurations across all clusters and provide recommendations.
 
@@ -1613,7 +1624,7 @@ def get_node_type_recommendations(
     """
     logger.info("Analyzing node type configurations for all clusters")
 
-    clusters = _list_clusters_limited(ws, limit=100)
+    clusters = _list_clusters_limited(ws, limit=100, cluster_ids=cluster_ids)
     analyses = []
 
     for cluster in clusters:

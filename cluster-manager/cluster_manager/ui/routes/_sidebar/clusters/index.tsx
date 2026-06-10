@@ -29,6 +29,7 @@ import {
   useStartCluster,
   useStopCluster,
 } from "@/lib/api";
+import { useMonitoredClusters } from "@/lib/monitored-clusters-context";
 import { PolicyDetailDialog } from "@/components/clusters/policy-detail-dialog";
 import { cn, formatDuration, formatNumber } from "@/lib/utils";
 import { ClusterActionsDropdown } from "@/components/clusters/cluster-actions-dropdown";
@@ -518,9 +519,11 @@ function ClustersPage() {
   const [selectedPolicyId, setSelectedPolicyId] = useState<string | null>(null);
   const { policy: policyFilter } = Route.useSearch();
   const navigate = useNavigate();
-  const { data: clusters, isLoading, error, refetch } = useClusters();
+  const { selectedIds, isAllSelected } = useMonitoredClusters();
+  const clusterFilter = isAllSelected ? undefined : selectedIds;
+  const { data: clusters, isLoading, error, refetch } = useClusters(undefined, clusterFilter);
   const { data: metrics } = useMetricsSummary();
-  const { data: policies } = usePolicies();
+  const { data: policies } = usePolicies(clusterFilter);
   const { data: selectedPolicy, isLoading: isPolicyLoading } = usePolicy(selectedPolicyId);
 
   // Create policy map for displaying policy names

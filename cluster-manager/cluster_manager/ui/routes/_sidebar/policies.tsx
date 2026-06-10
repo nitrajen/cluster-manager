@@ -11,10 +11,13 @@ import {
 } from "lucide-react";
 
 import { usePolicies } from "@/lib/api";
+import { useMonitoredClusters } from "@/lib/monitored-clusters-context";
 import { formatDateTime } from "@/lib/utils";
 
 function PoliciesPage() {
-  const { data: policies, isLoading, error, refetch } = usePolicies();
+  const { selectedIds, isAllSelected } = useMonitoredClusters();
+  const clusterFilter = isAllSelected ? undefined : selectedIds;
+  const { data: policies, isLoading, error, refetch } = usePolicies(clusterFilter);
 
   if (error) {
     return (

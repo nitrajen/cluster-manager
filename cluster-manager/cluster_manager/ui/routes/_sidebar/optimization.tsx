@@ -52,6 +52,7 @@ import {
   type NodeTypeSeverity,
   type SparkConfigSeverity,
 } from "@/lib/api";
+import { useMonitoredClusters } from "@/lib/monitored-clusters-context";
 import { cn, formatCurrency, formatNumber } from "@/lib/utils";
 import { ClusterActionsDropdown } from "@/components/clusters/cluster-actions-dropdown";
 
@@ -1202,15 +1203,17 @@ type TabType = "oversized" | "spark-config" | "cost" | "autoscaling" | "node-typ
 
 function OptimizationPage() {
   const [activeTab, setActiveTab] = useState<TabType>("oversized");
+  const { selectedIds, isAllSelected } = useMonitoredClusters();
+  const monitoredFilter = isAllSelected ? undefined : selectedIds;
 
-  const { data: summary, isLoading: summaryLoading } = useOptimizationSummary();
-  const { data: oversizedClusters, isLoading: oversizedLoading } = useOversizedClusters(5);
-  const { data: jobRecommendations, isLoading: jobsLoading } = useJobRecommendations();
-  const { data: scheduleRecommendations, isLoading: scheduleLoading } = useScheduleRecommendations();
-  const { data: sparkConfigData, isLoading: sparkConfigLoading } = useSparkConfigRecommendations();
-  const { data: costData, isLoading: costLoading } = useCostRecommendations();
-  const { data: autoscalingData, isLoading: autoscalingLoading } = useAutoscalingRecommendations();
-  const { data: nodeTypeData, isLoading: nodeTypeLoading } = useNodeTypeRecommendations();
+  const { data: summary, isLoading: summaryLoading } = useOptimizationSummary(monitoredFilter);
+  const { data: oversizedClusters, isLoading: oversizedLoading } = useOversizedClusters(5, monitoredFilter);
+  const { data: jobRecommendations, isLoading: jobsLoading } = useJobRecommendations(monitoredFilter);
+  const { data: scheduleRecommendations, isLoading: scheduleLoading } = useScheduleRecommendations(monitoredFilter);
+  const { data: sparkConfigData, isLoading: sparkConfigLoading } = useSparkConfigRecommendations(false, monitoredFilter);
+  const { data: costData, isLoading: costLoading } = useCostRecommendations(false, monitoredFilter);
+  const { data: autoscalingData, isLoading: autoscalingLoading } = useAutoscalingRecommendations(false, monitoredFilter);
+  const { data: nodeTypeData, isLoading: nodeTypeLoading } = useNodeTypeRecommendations(false, monitoredFilter);
 
   // Sorting state for oversized clusters table
   const [oversizedSort, setOversizedSort] = useState<{ field: SortField; direction: SortDirection }>({

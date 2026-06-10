@@ -208,12 +208,15 @@ async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 // Query hooks
-export function useClusters(state?: string) {
-  const queryParams = state ? `?state=${state}` : "";
+export function useClusters(state?: string, clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  if (state) params.set("state", state);
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
+  const qs = params.toString() ? `?${params}` : "";
   return useQuery({
-    queryKey: ["clusters", state],
-    queryFn: () => fetchApi<ClusterSummary[]>(`/api/clusters${queryParams}`),
-    refetchInterval: 30000, // Refresh every 30 seconds
+    queryKey: ["clusters", state, clusterIds],
+    queryFn: () => fetchApi<ClusterSummary[]>(`/api/clusters${qs}`),
+    refetchInterval: 30000,
   });
 }
 
@@ -304,10 +307,13 @@ export function useTopConsumers(days = 30, limit = 10) {
   });
 }
 
-export function usePolicies() {
+export function usePolicies(clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
+  const qs = params.toString() ? `?${params}` : "";
   return useQuery({
-    queryKey: ["policies"],
-    queryFn: () => fetchApi<ClusterPolicySummary[]>("/api/policies"),
+    queryKey: ["policies", clusterIds],
+    queryFn: () => fetchApi<ClusterPolicySummary[]>(`/api/policies${qs}`),
   });
 }
 
@@ -347,36 +353,48 @@ export function useStopCluster() {
 }
 
 // Optimization hooks
-export function useOptimizationSummary() {
+export function useOptimizationSummary(clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
+  const qs = params.toString() ? `?${params}` : "";
   return useQuery({
-    queryKey: ["optimization-summary"],
-    queryFn: () => fetchApi<OptimizationSummary>("/api/optimization/summary"),
+    queryKey: ["optimization-summary", clusterIds],
+    queryFn: () => fetchApi<OptimizationSummary>(`/api/optimization/summary${qs}`),
     refetchInterval: 60000,
   });
 }
 
-export function useOversizedClusters(minWorkers = 10) {
+export function useOversizedClusters(minWorkers = 10, clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  params.set("min_workers", String(minWorkers));
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
   return useQuery({
-    queryKey: ["oversized-clusters", minWorkers],
+    queryKey: ["oversized-clusters", minWorkers, clusterIds],
     queryFn: () =>
-      fetchApi<OversizedClusterAnalysis[]>(`/api/optimization/oversized-clusters?min_workers=${minWorkers}`),
+      fetchApi<OversizedClusterAnalysis[]>(`/api/optimization/oversized-clusters?${params}`),
     refetchInterval: 60000,
   });
 }
 
-export function useJobRecommendations() {
+export function useJobRecommendations(clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
+  const qs = params.toString() ? `?${params}` : "";
   return useQuery({
-    queryKey: ["job-recommendations"],
-    queryFn: () => fetchApi<JobClusterRecommendation[]>("/api/optimization/job-recommendations"),
+    queryKey: ["job-recommendations", clusterIds],
+    queryFn: () => fetchApi<JobClusterRecommendation[]>(`/api/optimization/job-recommendations${qs}`),
     refetchInterval: 60000,
   });
 }
 
-export function useScheduleRecommendations() {
+export function useScheduleRecommendations(clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
+  const qs = params.toString() ? `?${params}` : "";
   return useQuery({
-    queryKey: ["schedule-recommendations"],
+    queryKey: ["schedule-recommendations", clusterIds],
     queryFn: () =>
-      fetchApi<ScheduleOptimizationRecommendation[]>("/api/optimization/schedule-recommendations"),
+      fetchApi<ScheduleOptimizationRecommendation[]>(`/api/optimization/schedule-recommendations${qs}`),
     refetchInterval: 60000,
   });
 }
@@ -407,12 +425,15 @@ export interface ClusterSparkConfigAnalysis {
   recommendations: SparkConfigRecommendation[];
 }
 
-export function useSparkConfigRecommendations(includeNoIssues = false) {
+export function useSparkConfigRecommendations(includeNoIssues = false, clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  params.set("include_no_issues", String(includeNoIssues));
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
   return useQuery({
-    queryKey: ["spark-config-recommendations", includeNoIssues],
+    queryKey: ["spark-config-recommendations", includeNoIssues, clusterIds],
     queryFn: () =>
       fetchApi<ClusterSparkConfigAnalysis[]>(
-        `/api/optimization/spark-config-recommendations?include_no_issues=${includeNoIssues}`
+        `/api/optimization/spark-config-recommendations?${params}`
       ),
     refetchInterval: 60000,
   });
@@ -451,12 +472,15 @@ export interface ClusterCostAnalysis {
   recommendations: CostOptimizationRecommendation[];
 }
 
-export function useCostRecommendations(includeNoIssues = false) {
+export function useCostRecommendations(includeNoIssues = false, clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  params.set("include_no_issues", String(includeNoIssues));
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
   return useQuery({
-    queryKey: ["cost-recommendations", includeNoIssues],
+    queryKey: ["cost-recommendations", includeNoIssues, clusterIds],
     queryFn: () =>
       fetchApi<ClusterCostAnalysis[]>(
-        `/api/optimization/cost-recommendations?include_no_issues=${includeNoIssues}`
+        `/api/optimization/cost-recommendations?${params}`
       ),
     refetchInterval: 60000,
   });
@@ -499,12 +523,15 @@ export interface ClusterAutoscalingAnalysis {
   recommendations: AutoscalingRecommendation[];
 }
 
-export function useAutoscalingRecommendations(includeNoIssues = false) {
+export function useAutoscalingRecommendations(includeNoIssues = false, clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  params.set("include_no_issues", String(includeNoIssues));
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
   return useQuery({
-    queryKey: ["autoscaling-recommendations", includeNoIssues],
+    queryKey: ["autoscaling-recommendations", includeNoIssues, clusterIds],
     queryFn: () =>
       fetchApi<ClusterAutoscalingAnalysis[]>(
-        `/api/optimization/autoscaling-recommendations?include_no_issues=${includeNoIssues}`
+        `/api/optimization/autoscaling-recommendations?${params}`
       ),
     refetchInterval: 60000,
   });
@@ -570,12 +597,15 @@ export interface ClusterNodeTypeAnalysis {
   recommendations: NodeTypeRecommendation[];
 }
 
-export function useNodeTypeRecommendations(includeNoIssues = false) {
+export function useNodeTypeRecommendations(includeNoIssues = false, clusterIds?: string[]) {
+  const params = new URLSearchParams();
+  params.set("include_no_issues", String(includeNoIssues));
+  if (clusterIds?.length) clusterIds.forEach((id) => params.append("cluster_ids", id));
   return useQuery({
-    queryKey: ["node-type-recommendations", includeNoIssues],
+    queryKey: ["node-type-recommendations", includeNoIssues, clusterIds],
     queryFn: () =>
       fetchApi<ClusterNodeTypeAnalysis[]>(
-        `/api/optimization/node-type-recommendations?include_no_issues=${includeNoIssues}`
+        `/api/optimization/node-type-recommendations?${params}`
       ),
     refetchInterval: 60000,
   });

@@ -13,10 +13,12 @@ import {
 import { useEffect, useState } from "react";
 
 import { cn } from "@/lib/utils";
+import { MonitoredClustersProvider } from "@/lib/monitored-clusters-context";
+import { ClusterPicker } from "@/components/cluster-picker";
 
 const navItems = [
-  { to: "/clusters", label: "Clusters", icon: Cpu },
   { to: "/live-metrics", label: "Live Metrics", icon: Activity },
+  { to: "/clusters", label: "Clusters", icon: Cpu },
   { to: "/optimization", label: "Optimization", icon: Lightbulb },
   { to: "/policies", label: "Policies", icon: Shield },
 ];
@@ -123,7 +125,10 @@ function SidebarLayout() {
       {/* Main content */}
       <main className="flex-1 overflow-auto">
         <div className="p-6 max-w-7xl mx-auto">
-          <Outlet />
+          <MonitoredClustersProvider>
+            <ClusterPicker />
+            <Outlet />
+          </MonitoredClustersProvider>
         </div>
       </main>
     </div>
