@@ -217,9 +217,16 @@ function LiveMetricsSection({ clusterId }: { clusterId: string }) {
       </div>
 
       {/* Node Table */}
-      {data.current_nodes.length > 0 && (
+      {data.current_nodes.length > 0 && (() => {
+        const sorted = [...data.current_nodes].sort((a, b) =>
+          (b.is_driver ? 1 : 0) - (a.is_driver ? 1 : 0)
+        );
+        let wIdx = 0;
+        return (
         <div>
-          <h3 className="text-sm font-medium text-muted-foreground mb-2">Current Nodes</h3>
+          <h3 className="text-sm font-medium text-muted-foreground mb-2">
+            Current Nodes ({sorted.length})
+          </h3>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -232,7 +239,10 @@ function LiveMetricsSection({ clusterId }: { clusterId: string }) {
                 </tr>
               </thead>
               <tbody>
-                {data.current_nodes.map((node) => (
+                {sorted.map((node) => {
+                  if (!node.is_driver) wIdx++;
+                  const label = node.is_driver ? "Driver" : `Worker ${wIdx}`;
+                  return (
                   <tr key={node.instance_id} className="border-b last:border-0">
                     <td className="py-2 pr-4">
                       <span className={cn(
@@ -241,7 +251,7 @@ function LiveMetricsSection({ clusterId }: { clusterId: string }) {
                           ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
                           : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400"
                       )}>
-                        {node.is_driver ? "Driver" : "Worker"}
+                        {label}
                       </span>
                     </td>
                     <td className="py-2 pr-4 font-mono text-xs">{node.node_type}</td>
@@ -267,12 +277,14 @@ function LiveMetricsSection({ clusterId }: { clusterId: string }) {
                       {formatBytes(node.network_sent_bytes)}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

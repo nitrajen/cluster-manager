@@ -149,6 +149,71 @@ function ClusterTable({
   );
 }
 
+function NodeCard({ instanceId, metrics, roleLabel, isDriver }: {
+  instanceId: string;
+  metrics: LiveNodeMetric[];
+  roleLabel: string;
+  isDriver: boolean;
+}) {
+  const latest = metrics[metrics.length - 1];
+  const totalCpu = (latest.cpu_user_percent || 0) + (latest.cpu_system_percent || 0);
+
+  return (
+    <div className={cn(
+      "border rounded-lg p-3",
+      isDriver ? "border-blue-200 dark:border-blue-800 bg-blue-50/30 dark:bg-blue-950/20" : ""
+    )}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className={cn(
+            "px-1.5 py-0.5 text-xs rounded font-medium",
+            isDriver
+              ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+              : "bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-400"
+          )}>
+            {roleLabel}
+          </span>
+          <span className="font-mono text-[10px] text-muted-foreground">{instanceId}</span>
+          {latest.node_type && (
+            <span className="text-[10px] text-muted-foreground">{latest.node_type}</span>
+          )}
+        </div>
+        <span className="text-[10px] text-muted-foreground">
+          {formatTimestamp(latest.ts)}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <div className="text-[10px] text-muted-foreground mb-0.5">CPU</div>
+          <MetricBar value={totalCpu} color={totalCpu > 80 ? "bg-red-500" : "bg-blue-500"} />
+        </div>
+        <div>
+          <div className="text-[10px] text-muted-foreground mb-0.5">Memory</div>
+          <MetricBar
+            value={latest.mem_used_percent}
+            color={(latest.mem_used_percent || 0) > 90 ? "bg-red-500" : "bg-purple-500"}
+          />
+        </div>
+        <div>
+          <div className="text-[10px] text-muted-foreground mb-0.5">Disk</div>
+          <MetricBar
+            value={latest.disk_used_percent}
+            color={(latest.disk_used_percent || 0) > 90 ? "bg-red-500" : "bg-amber-500"}
+          />
+        </div>
+      </div>
+      <div className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+        <span>CPU:</span>
+        {metrics.slice(-12).map((m, i) => {
+          const cpu = (m.cpu_user_percent || 0) + (m.cpu_system_percent || 0);
+          const bar = cpu > 80 ? "█" : cpu > 60 ? "▇" : cpu > 40 ? "▅" : cpu > 20 ? "▃" : "▁";
+          return <span key={i} className={cpu > 80 ? "text-red-500" : ""}>{bar}</span>;
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ClusterDetail({ clusterId }: { clusterId: string }) {
   const { data: history, isLoading } = useLiveClusterHistory(clusterId, 30);
 
@@ -168,78 +233,110 @@ function ClusterDetail({ clusterId }: { clusterId: string }) {
     byInstance.get(key)!.push(m);
   }
 
+  // Separate driver and workers
+  const driver: [string, LiveNodeMetric[]] | null = Array.from(byInstance.entries())
+    .find(([, ms]) => ms[ms.length - 1]?.is_driver) || null;
+  const workers = Array.from(byInstance.entries())
+    .filter(([, ms]) => !ms[ms.length - 1]?.is_driver);
+
+  // Cluster-level aggregates from latest readings
+  const allLatest = Array.from(byInstance.values()).map(ms => ms[ms.length - 1]);
+  const nodeCount = allLatest.length;
+  const avgCpu = allLatest.reduce((s, n) => s + (n.cpu_user_percent || 0) + (n.cpu_system_percent || 0), 0) / nodeCount;
+  const maxCpu = Math.max(...allLatest.map(n => (n.cpu_user_percent || 0) + (n.cpu_system_percent || 0)));
+  const avgMem = allLatest.reduce((s, n) => s + (n.mem_used_percent || 0), 0) / nodeCount;
+  const maxMem = Math.max(...allLatest.map(n => n.mem_used_percent || 0));
+  const maxLoad = Math.max(...allLatest.map(n => n.load_1m || 0));
+
   return (
-    <div className="border rounded-lg p-4 mt-4">
-      <h3 className="font-medium mb-4 flex items-center gap-2">
-        <Server size={16} />
-        Node Details — {clusterId.slice(0, 16)}...
-      </h3>
-      <div className="space-y-4">
-        {Array.from(byInstance.entries()).map(([instanceId, metrics]) => {
-          const latest = metrics[metrics.length - 1];
-          const totalCpu =
-            (latest.cpu_user_percent || 0) + (latest.cpu_system_percent || 0);
-          return (
-            <div key={instanceId} className="border rounded-lg p-3">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs">{instanceId}</span>
-                  {latest.is_driver && (
-                    <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs rounded">
-                      Driver
-                    </span>
-                  )}
-                  {latest.node_type && (
-                    <span className="text-xs text-muted-foreground">{latest.node_type}</span>
-                  )}
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {formatTimestamp(latest.ts)}
-                </span>
-              </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <div className="text-xs text-muted-foreground mb-1">CPU (user+sys)</div>
-                  <MetricBar
-                    value={totalCpu}
-                    color={totalCpu > 80 ? "bg-red-500" : "bg-blue-500"}
-                  />
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground mb-1">Memory</div>
-                  <MetricBar
-                    value={latest.mem_used_percent}
-                    color={
-                      (latest.mem_used_percent || 0) > 90
-                        ? "bg-red-500"
-                        : "bg-purple-500"
-                    }
-                  />
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground mb-1">Disk</div>
-                  <MetricBar
-                    value={latest.disk_used_percent}
-                    color={
-                      (latest.disk_used_percent || 0) > 90
-                        ? "bg-red-500"
-                        : "bg-amber-500"
-                    }
-                  />
-                </div>
-              </div>
-              {/* Mini sparkline as text */}
-              <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
-                <span>CPU trend ({metrics.length} pts):</span>
-                {metrics.slice(-10).map((m, i) => {
-                  const cpu = (m.cpu_user_percent || 0) + (m.cpu_system_percent || 0);
-                  const bar = cpu > 80 ? "█" : cpu > 60 ? "▇" : cpu > 40 ? "▅" : cpu > 20 ? "▃" : "▁";
-                  return <span key={i} className={cpu > 80 ? "text-red-500" : ""}>{bar}</span>;
-                })}
-              </div>
+    <div className="border rounded-lg mt-4 overflow-hidden">
+      {/* Cluster Aggregate Header */}
+      <div className="bg-muted/30 border-b px-4 py-3">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <Server size={16} className="text-primary" />
+            <span className="font-medium text-sm">{clusterId}</span>
+            <span className="text-xs text-muted-foreground">
+              {nodeCount} node{nodeCount > 1 ? "s" : ""} ({driver ? "1 driver" : "no driver"} + {workers.length} worker{workers.length !== 1 ? "s" : ""})
+            </span>
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {formatTimestamp(allLatest[0]?.ts || "")}
+          </span>
+        </div>
+        {/* Aggregate metrics */}
+        <div className="grid grid-cols-5 gap-4">
+          <div>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Avg CPU</div>
+            <div className={cn("text-lg font-bold", avgCpu > 80 ? "text-red-600" : avgCpu > 50 ? "text-yellow-600" : "text-green-600")}>
+              {avgCpu.toFixed(1)}%
             </div>
-          );
-        })}
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Peak CPU</div>
+            <div className={cn("text-lg font-bold", maxCpu > 80 ? "text-red-600" : "text-muted-foreground")}>
+              {maxCpu.toFixed(1)}%
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Avg Memory</div>
+            <div className={cn("text-lg font-bold", avgMem > 85 ? "text-red-600" : avgMem > 60 ? "text-yellow-600" : "text-green-600")}>
+              {avgMem.toFixed(1)}%
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Peak Memory</div>
+            <div className={cn("text-lg font-bold", maxMem > 85 ? "text-red-600" : "text-muted-foreground")}>
+              {maxMem.toFixed(1)}%
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Load (1m)</div>
+            <div className="text-lg font-bold text-muted-foreground">
+              {maxLoad.toFixed(2)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Node Group: Driver + Workers */}
+      <div className="p-4 space-y-3">
+        {/* Driver */}
+        {driver && (
+          <NodeCard
+            instanceId={driver[0]}
+            metrics={driver[1]}
+            roleLabel="Driver"
+            isDriver={true}
+          />
+        )}
+
+        {/* Workers */}
+        {workers.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                Workers ({workers.length})
+              </span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+            <div className={cn(
+              "grid gap-2",
+              workers.length <= 2 ? "grid-cols-1" : workers.length <= 4 ? "grid-cols-2" : "grid-cols-2 lg:grid-cols-3"
+            )}>
+              {workers.map(([instanceId, metrics], idx) => (
+                <NodeCard
+                  key={instanceId}
+                  instanceId={instanceId}
+                  metrics={metrics}
+                  roleLabel={`Worker ${idx + 1}`}
+                  isDriver={false}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

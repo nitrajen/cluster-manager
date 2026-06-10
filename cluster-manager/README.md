@@ -229,11 +229,249 @@ Real-time CPU, memory, disk, and network metrics from cluster nodes via OpenTele
 | `load_1m` / `load_5m` / `load_15m` | System load averages |
 
 **Setup:**
-1. Upload init script to client workspace (DBFS or Workspace path)
-2. Add IP of client workspace to FEVM IP allowlist
-3. Attach init script to cluster — no env vars needed
-4. Bootstrap pool: `POST /api/otel/bootstrap` with user token
-5. Metrics flow automatically from cluster start
+1. Upload OTel Collector binary to a Unity Catalog Volume (see below)
+2. Upload init script to client workspace (Workspace path recommended)
+3. Add NAT IP of client workspace to FEVM IP allowlist
+4. Attach init script to cluster — no env vars needed (defaults embedded)
+5. Bootstrap Lakebase pool: visit the app once as a human user, or `POST /api/otel/bootstrap`
+6. Metrics flow automatically on cluster start
+
+---
+
+## OTel Init Script Setup
+
+### Prerequisites
+
+| Requirement | Purpose |
+|-------------|---------|
+| OTel Collector binary in UC Volume | Fast startup (avoids GitHub download on every cluster start) |
+| Workspace init script path | Avoids UC Artifact Allowlist restrictions |
+| Service Principal (SP) on FEVM | M2M OAuth for cluster-to-app auth |
+| FEVM IP allowlist entry | Allow client workspace NAT IPs to reach the app |
+
+### Step 1: Download and Upload OTel Collector Binary
+
+Download the latest `otelcol-contrib` binary and upload to a UC Volume accessible from your clusters:
+
+```bash
+# Check latest version at: https://github.com/open-telemetry/opentelemetry-collector-releases/releases
+
+VERSION=0.116.0
+ARCH=linux_amd64
+
+# Download
+curl -sL -o /tmp/otelcol-contrib.tar.gz \
+  "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${VERSION}/otelcol-contrib_${VERSION}_${ARCH}.tar.gz"
+
+# Extract binary
+tar xzf /tmp/otelcol-contrib.tar.gz -C /tmp otelcol-contrib
+
+# Upload to Volume (adjust catalog/schema/volume as needed)
+databricks fs cp /tmp/otelcol-contrib \
+  dbfs:/Volumes/main/cluster_manager/binaries/otelcol-contrib \
+  --profile "YOUR_PROFILE"
+
+# Verify
+databricks fs ls dbfs:/Volumes/main/cluster_manager/binaries/ --profile "YOUR_PROFILE"
+```
+
+> **Why pre-stage?** Downloading from GitHub on every cluster start adds 10-30s latency and can fail due to rate limits or network policies. A Volume-staged binary starts in <2s.
+
+### Step 2: Upload Init Script to Workspace
+
+```bash
+# Upload the init script (from repo: cluster_manager/otel/init_script.sh)
+databricks workspace import \
+  /Users/you@company.com/init_scripts/init_otel_metrics.sh \
+  --file cluster_manager/otel/init_script.sh \
+  --format AUTO --overwrite \
+  --profile "YOUR_PROFILE"
+```
+
+> **Why Workspace path (not Volumes)?** UC Artifact Allowlist on some workspaces blocks init scripts from Volumes. Workspace paths bypass this restriction.
+
+### Step 3: Configure the Init Script
+
+The script has **centralized defaults** — no env vars required for standard deployments:
+
+```bash
+# Defaults embedded in the script (override via cluster env vars if needed):
+OTEL_ENDPOINT="https://cluster-manager-xxx.aws.databricksapps.com"
+OTEL_VOLUME_PATH="/Volumes/main/cluster_manager/binaries"
+OTEL_INTERVAL="15s"
+OTEL_SP_CLIENT_ID="<service-principal-client-id>"
+OTEL_SP_CLIENT_SECRET="<service-principal-secret>"
+OTEL_TOKEN_ENDPOINT="https://<fevm-workspace>.cloud.databricks.com/oidc/v1/token"
+```
+
+To override for a specific cluster, set env vars in `spark_env_vars`:
+```json
+{
+  "OTEL_ENDPOINT": "https://your-app.databricksapps.com",
+  "OTEL_INTERVAL": "30s"
+}
+```
+
+### Step 4: Attach to Cluster
+
+In cluster configuration → Advanced → Init Scripts:
+- **Source**: Workspace
+- **Path**: `/Users/you@company.com/init_scripts/init_otel_metrics.sh`
+
+Or via cluster policy for org-wide deployment:
+```json
+{
+  "init_scripts.0.workspace.destination": {
+    "type": "fixed",
+    "value": "/Users/admin@company.com/init_scripts/init_otel_metrics.sh"
+  }
+}
+```
+
+### Step 5: Allow Client Workspace IP
+
+The FEVM workspace has an IP allowlist. Add the NAT IP of your client workspace:
+
+```bash
+# Find your workspace's outbound IP (run on a cluster in that workspace):
+# curl -s ifconfig.me
+
+# Add to FEVM allowlist:
+databricks api post /api/2.0/ip-access-lists \
+  --json '{"label": "otel-<workspace-name>", "list_type": "ALLOW", "ip_addresses": ["<NAT_IP>/32"]}' \
+  --profile "FEVM_PROFILE"
+```
+
+### Step 6: Bootstrap Lakebase
+
+Lakebase requires a human user OAuth token (not SP). Visit the app once in your browser, or call:
+
+```bash
+# Get your user token
+TOKEN=$(databricks auth token --profile FEVM_PROFILE -o json | jq -r '.access_token')
+
+# Bootstrap
+curl -X POST "https://cluster-manager-xxx.aws.databricksapps.com/api/otel/bootstrap" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### M2M OAuth Security (Service Principal Configuration)
+
+The OTel pipeline uses **Machine-to-Machine OAuth** (client_credentials grant) so that cluster nodes can authenticate to the collector app without human interaction.
+
+#### Architecture
+
+```
+Cluster Node                          FEVM Workspace
+┌──────────────┐                     ┌──────────────────────┐
+│ OTel Collector│─── client_credentials ──►│ /oidc/v1/token      │
+│              │◄── access_token ─────────│                      │
+│              │                          └──────────────────────┘
+│              │
+│              │─── Bearer <token> ──────►┌──────────────────────┐
+│              │                          │ App: /api/otel/v1/   │
+└──────────────┘                          │ - Validates JWT      │
+                                          │ - Inserts to Lakebase│
+                                          └──────────────────────┘
+```
+
+#### Step-by-Step: Create Service Principal
+
+1. **Create a Service Principal** on the FEVM workspace (Account Console → Service Principals):
+
+```bash
+# Via Account API
+databricks account service-principals create \
+  --json '{"display_name": "otel-collector-sp", "active": true}' \
+  --profile FEVM_ACCOUNT
+```
+
+2. **Generate OAuth Secret** for the SP:
+
+```bash
+# Account Console → Service Principals → otel-collector-sp → OAuth secrets → Generate
+# Save: client_id and client_secret
+```
+
+3. **Grant Workspace Access** — add SP to the FEVM workspace:
+
+```bash
+# Account Console → Workspaces → FEVM → Permissions → Add SP
+# Or via API:
+databricks workspace assign-principal \
+  --principal-id <SP_ID> \
+  --permissions "USER" \
+  --profile FEVM_ACCOUNT
+```
+
+4. **Test Token Generation**:
+
+```bash
+# Verify the SP can get tokens
+curl -s -X POST "https://<fevm-workspace>.cloud.databricks.com/oidc/v1/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=<CLIENT_ID>&client_secret=<CLIENT_SECRET>&scope=all-apis"
+
+# Should return: {"access_token": "eyJ...", "token_type": "Bearer", "expires_in": 3600}
+```
+
+#### Token Flow at Runtime
+
+1. Init script starts → requests token via `client_credentials` grant
+2. Token endpoint returns JWT (1-hour TTL)
+3. Collector includes `Authorization: Bearer <token>` on every push
+4. App validates JWT format (3-part dot-separated)
+5. App proxy adds `X-Forwarded-Access-Token` header
+6. SP tokens (sub=UUID) authenticate the push but **cannot** write to Lakebase
+7. Lakebase writes use a **cached human user token** (sub=email@)
+
+#### Key Security Properties
+
+| Property | Detail |
+|----------|--------|
+| **No static tokens** | SP credentials generate short-lived JWTs (1h) |
+| **Scope isolation** | SP has minimal permissions — only `all-apis` scope for token endpoint |
+| **Token type discrimination** | JWT `sub` claim: human=`email@`, SP=`UUID` |
+| **Lakebase protection** | Only human user tokens accepted for DB writes |
+| **IP-level filtering** | FEVM allowlist restricts which IPs can reach the app |
+| **Credential rotation** | Generate new secret → update init script defaults → restart clusters |
+
+#### Rotating SP Credentials
+
+```bash
+# 1. Generate new secret (old one still works)
+# Account Console → SP → OAuth secrets → Generate new
+
+# 2. Update init script with new secret
+# Edit OTEL_SP_CLIENT_SECRET default in init_script.sh
+
+# 3. Re-upload init script
+databricks workspace import /Users/.../init_otel_metrics.sh \
+  --file cluster_manager/otel/init_script.sh --format AUTO --overwrite
+
+# 4. Restart clusters (or wait for next cluster start)
+
+# 5. Delete old secret after all clusters rotated
+# Account Console → SP → OAuth secrets → Delete old
+```
+
+### Driver/Worker Detection
+
+The init script identifies driver vs worker nodes:
+- **DBR < 17**: Uses `DB_IS_DRIVER` env var (set by Databricks)
+- **DBR 17+**: Falls back to comparing `spark.driver.host` in Spark config against local IP
+- **Fallback**: Defaults to `worker` if detection unavailable at init time
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `INIT_SCRIPT_FAILURE` | UC Artifact Allowlist blocks Volume path | Use Workspace path instead |
+| HTTP 403 from collector | Client IP not in FEVM allowlist | Add NAT IP to allowlist |
+| HTTP 401 from collector | SP token expired or invalid | Check SP credentials in script |
+| Metrics not in dashboard | Lakebase not bootstrapped | Visit app in browser or call `/api/otel/bootstrap` |
+| All nodes show as "Worker" | `DB_IS_DRIVER` not set + Spark not started at init time | Expected on DBR 17+; dashboard still groups correctly |
+| Slow cluster start (+30s) | Binary download from GitHub | Pre-stage binary in Volume |
 
 ---
 
