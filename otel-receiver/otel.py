@@ -226,9 +226,6 @@ async def receive_metrics(
     x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
 ):
     """Receive OTLP/HTTP JSON metrics from cluster node OTel Collectors."""
-    ws = request.app.state.ws
-    warehouse_id = request.app.state.warehouse_id
-
     effective_auth = authorization or (f"Bearer {x_forwarded_access_token}" if x_forwarded_access_token else None)
     if not _validate_token(effective_auth):
         sub = _jwt_sub(effective_auth[7:]) if effective_auth and effective_auth.startswith("Bearer ") else ""
@@ -248,10 +245,10 @@ async def receive_metrics(
     try:
         rows = parse_payload(payload)
         if rows:
-            db.insert(rows, ws, warehouse_id)
-            logger.debug(f"OTel: inserted {len(rows)} rows")
+            db.buffer.add(rows)  # returns immediately — flushed to Delta by background task
+            logger.debug(f"OTel: buffered {len(rows)} rows")
     except Exception as e:
-        logger.error(f"OTel insert error: {e}")
+        logger.error(f"OTel buffer error: {e}")
         raise HTTPException(status_code=500, detail=str(e)[:300])
 
     return {}

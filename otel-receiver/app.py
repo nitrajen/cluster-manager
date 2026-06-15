@@ -1,11 +1,11 @@
 """Minimal OTel metrics receiver — Databricks App entry point."""
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.compute import State
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import db
@@ -19,14 +19,13 @@ def _resolve_warehouse(ws: WorkspaceClient) -> str:
     wh_id = os.getenv("SQL_WAREHOUSE_ID", "")
     if wh_id:
         return wh_id
-    # Auto-discover: prefer a running serverless warehouse
     warehouses = list(ws.warehouses.list())
     def _serverless(w) -> bool:
         return getattr(w, "enable_serverless_compute", False) or \
                str(getattr(w, "warehouse_type", "")).upper() == "PRO"
     for w in sorted(warehouses, key=lambda w: (not _serverless(w), str(w.state))):
         if w.id:
-            logger.info(f"Using warehouse: {w.name} ({w.id})")
+            logger.info(f"Auto-selected warehouse: {w.name} ({w.id})")
             return w.id
     raise RuntimeError("No SQL warehouse found. Set SQL_WAREHOUSE_ID in app.yaml.")
 
@@ -35,14 +34,32 @@ def _resolve_warehouse(ws: WorkspaceClient) -> str:
 async def lifespan(app: FastAPI):
     ws = WorkspaceClient()
     warehouse_id = _resolve_warehouse(ws)
+
     try:
         db.ensure_schema(ws, warehouse_id)
     except Exception as e:
-        logger.warning(f"Schema init failed (non-fatal, will retry on first write): {e}")
+        logger.warning(f"Schema init failed (will retry on first flush): {e}")
+
+    db.buffer.configure(ws, warehouse_id)
+
+    # Background task: flush buffer to Delta on a fixed interval
+    flush_task = asyncio.create_task(db.buffer.flush_loop())
+
     app.state.ws = ws
     app.state.warehouse_id = warehouse_id
-    logger.info(f"Ready — writing to {db.FULL_TABLE} via warehouse {warehouse_id}")
+    logger.info(f"Ready — buffering to {db.FULL_TABLE}, flushing every {db.FLUSH_INTERVAL}s")
+
     yield
+
+    # Flush remaining rows before shutdown
+    flush_task.cancel()
+    remaining = db.buffer.drain()
+    if remaining:
+        logger.info(f"Shutdown flush: writing {len(remaining)} buffered rows")
+        try:
+            db._write(remaining, ws, warehouse_id)
+        except Exception as e:
+            logger.error(f"Shutdown flush failed — {len(remaining)} rows dropped: {e}")
 
 
 app = FastAPI(title="OTel Metrics Receiver", lifespan=lifespan)
@@ -51,9 +68,11 @@ app.include_router(otel_router)
 
 
 @app.get("/health")
-async def health(request: "Request"):
+async def health(request: Request):
     return {
         "status": "healthy",
         "table": db.FULL_TABLE,
         "warehouse_id": getattr(request.app.state, "warehouse_id", None),
+        "buffered_rows": len(db.buffer._rows),
+        "flush_interval_seconds": db.FLUSH_INTERVAL,
     }
