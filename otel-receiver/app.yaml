@@ -1,0 +1,35 @@
+command:
+  - uvicorn
+  - app:app
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"
+
+env:
+  # Your Databricks workspace URL
+  - name: DATABRICKS_HOST
+    value: "https://YOUR-WORKSPACE.cloud.databricks.com"
+
+  # Lakebase connection (from: databricks lakebase endpoint get <endpoint-id>)
+  - name: LAKEBASE_HOST
+    value: "YOUR-ENDPOINT.database.cloud.databricks.com"
+  - name: LAKEBASE_DATABASE
+    value: "otel_metrics"
+  - name: LAKEBASE_USER
+    value: "your.email@company.com"
+  - name: LAKEBASE_PROJECT
+    value: "cluster-metrics"
+  - name: LAKEBASE_BRANCH
+    value: "main"
+  - name: LAKEBASE_ENDPOINT
+    value: "primary"
+
+  # Service Principal UUID(s) allowed to push metrics (comma-separated)
+  # Get from: Databricks UI > Settings > Identity > Service Principals
+  - name: OTEL_ALLOWED_SP_IDS
+    value: "YOUR-SP-UUID"
+
+  # Set to "true" to skip auth checks during initial testing
+  - name: OTEL_AUTH_DISABLED
+    value: "false"
