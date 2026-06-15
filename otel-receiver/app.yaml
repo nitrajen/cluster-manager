@@ -11,19 +11,16 @@ env:
   - name: DATABRICKS_HOST
     value: "https://YOUR-WORKSPACE.cloud.databricks.com"
 
-  # Lakebase connection (from: databricks lakebase endpoint get <endpoint-id>)
-  - name: LAKEBASE_HOST
-    value: "YOUR-ENDPOINT.database.cloud.databricks.com"
-  - name: LAKEBASE_DATABASE
-    value: "otel_metrics"
-  - name: LAKEBASE_USER
-    value: "your.email@company.com"
-  - name: LAKEBASE_PROJECT
-    value: "cluster-metrics"
-  - name: LAKEBASE_BRANCH
+  # Delta table location — table will be created as {DELTA_CATALOG}.{DELTA_SCHEMA}.node_metrics
+  - name: DELTA_CATALOG
     value: "main"
-  - name: LAKEBASE_ENDPOINT
-    value: "primary"
+  - name: DELTA_SCHEMA
+    value: "cluster_manager"
+
+  # SQL Warehouse used to write to Delta (leave blank to auto-discover)
+  # Serverless warehouse strongly recommended — cold starts are ~2s vs 1-3 min
+  - name: SQL_WAREHOUSE_ID
+    value: ""
 
   # Service Principal UUID(s) allowed to push metrics (comma-separated)
   # Get from: Databricks UI > Settings > Identity > Service Principals

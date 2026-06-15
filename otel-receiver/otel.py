@@ -1,4 +1,4 @@
-"""OTel metrics receiver — accepts OTLP/HTTP JSON from cluster nodes, writes to Lakebase."""
+"""OTel metrics receiver — accepts OTLP/HTTP JSON from cluster nodes, appends to Delta table."""
 from __future__ import annotations
 
 import base64
@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from db import pool
+import db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/otel", tags=["otel"])
@@ -53,7 +53,7 @@ def _validate_token(authorization: str | None) -> bool:
     sub = _jwt_sub(token)
     if not sub:
         return False
-    return "@" in sub or sub in allowed  # human users always allowed
+    return "@" in sub or sub in allowed
 
 
 # ── Metric parsing ────────────────────────────────────────────────────────────
@@ -138,76 +138,61 @@ def parse_payload(payload: dict) -> list[dict]:
                     r = rows[key]
 
                     if name == "system.cpu.utilization":
-                        col = CPU_STATE_COL.get(_attr(dp, "state"))
-                        if col:
+                        state = _attr(dp, "state")
+                        if state in CPU_STATE_COL:
                             pct = val * 100 if val <= 1.0 else val
-                            r[f"_cpu_{_attr(dp,'state')}_sum"] = r.get(f"_cpu_{_attr(dp,'state')}_sum", 0) + pct
-                            r[f"_cpu_{_attr(dp,'state')}_cnt"] = r.get(f"_cpu_{_attr(dp,'state')}_cnt", 0) + 1
-
+                            r[f"_cpu_{state}_sum"] = r.get(f"_cpu_{state}_sum", 0) + pct
+                            r[f"_cpu_{state}_cnt"] = r.get(f"_cpu_{state}_cnt", 0) + 1
                     elif name == "system.memory.utilization":
                         r["mem_used_percent"] = val * 100 if val <= 1.0 else val
-
                     elif name == "system.memory.usage":
                         r[f"_mem_{_attr(dp, 'state')}"] = val
-
                     elif name == "system.paging.utilization":
                         r["mem_swap_percent"] = val * 100 if val <= 1.0 else val
-
                     elif name in ("system.disk.utilization", "system.filesystem.utilization"):
-                        fs_type = _attr(dp, "type") or ""
-                        if fs_type not in ("devfs", "tmpfs", "autofs"):
+                        if _attr(dp, "type") not in ("devfs", "tmpfs", "autofs"):
                             pct = val * 100 if val <= 1.0 else val
                             if r["disk_used_percent"] is None or pct > r["disk_used_percent"]:
                                 r["disk_used_percent"] = pct
-
                     elif name == "system.network.io":
                         col = NET_DIR_COL.get(_attr(dp, "direction"))
                         if col:
                             r[col] = int(val)
-
                     elif name == "system.network.errors":
                         r["network_errors"] = (r["network_errors"] or 0) + int(val)
-
                     elif name == "system.network.dropped":
                         r["network_drops"] = (r["network_drops"] or 0) + int(val)
-
                     elif name == "system.disk.io_time":
                         r["disk_io_time_ms"] = (r["disk_io_time_ms"] or 0) + val
-
                     elif name == "system.disk.operations":
                         d = _attr(dp, "direction")
                         if d == "read":
                             r["disk_ops_read"] = (r["disk_ops_read"] or 0) + int(val)
                         elif d == "write":
                             r["disk_ops_write"] = (r["disk_ops_write"] or 0) + int(val)
-
                     elif name == "system.cpu.load_average.1m":
                         r["load_1m"] = val
                     elif name == "system.cpu.load_average.5m":
                         r["load_5m"] = val
                     elif name == "system.cpu.load_average.15m":
                         r["load_15m"] = val
-
                     elif name == "system.paging.operations":
                         d = _attr(dp, "direction")
                         if d == "page_in":
                             r["paging_in"] = (r["paging_in"] or 0) + int(val)
                         elif d == "page_out":
                             r["paging_out"] = (r["paging_out"] or 0) + int(val)
-
                     elif name == "system.processes.count":
                         if _attr(dp, "status") in (None, "running"):
                             r["process_count"] = (r["process_count"] or 0) + int(val)
-
                     elif name == "system.filesystem.inodes.usage":
                         state = _attr(dp, "state")
                         r[f"_inodes_{state}"] = r.get(f"_inodes_{state}", 0) + val
 
-    # Post-process accumulated values
     for r in rows.values():
         for state, col in CPU_STATE_COL.items():
             s, c = f"_cpu_{state}_sum", f"_cpu_{state}_cnt"
-            if s in r and r[c]:
+            if s in r and r.get(c):
                 r[col] = r[s] / r[c]
             r.pop(s, None)
             r.pop(c, None)
@@ -232,39 +217,7 @@ def parse_payload(payload: dict) -> list[dict]:
     return list(rows.values())
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-
-@router.post("/bootstrap")
-async def bootstrap(
-    authorization: str | None = Header(default=None),
-    x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
-):
-    """Seed Lakebase pool with a human user token. Run once after deploying the app."""
-    token = x_forwarded_access_token
-    if not token and authorization and authorization.startswith("Bearer "):
-        token = authorization[7:]
-    if not token:
-        raise HTTPException(status_code=401, detail="No token provided")
-    sub = _jwt_sub(token)
-    if "@" not in sub:
-        raise HTTPException(status_code=400, detail=f"Provide a human user token (got sub={sub})")
-    pool.cache_user_token(token)
-
-    import psycopg2
-    try:
-        conn = psycopg2.connect(
-            host=pool._host, port=5432, database=pool._database,
-            user=pool._user, password=token,
-            sslmode="require", connect_timeout=10,
-        )
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM node_metrics")
-        count = cur.fetchone()[0]
-        conn.close()
-        return {"status": "ok", "node_metrics_rows": count, "user": sub}
-    except Exception as e:
-        return {"status": "connected_but_query_failed", "error": str(e)[:200]}
-
+# ── Route ─────────────────────────────────────────────────────────────────────
 
 @router.post("/v1/metrics")
 async def receive_metrics(
@@ -273,8 +226,8 @@ async def receive_metrics(
     x_forwarded_access_token: str | None = Header(default=None, alias="X-Forwarded-Access-Token"),
 ):
     """Receive OTLP/HTTP JSON metrics from cluster node OTel Collectors."""
-    if not pool.is_configured:
-        raise HTTPException(status_code=503, detail="Lakebase not configured (missing LAKEBASE_HOST or LAKEBASE_USER)")
+    ws = request.app.state.ws
+    warehouse_id = request.app.state.warehouse_id
 
     effective_auth = authorization or (f"Bearer {x_forwarded_access_token}" if x_forwarded_access_token else None)
     if not _validate_token(effective_auth):
@@ -292,12 +245,10 @@ async def receive_metrics(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
 
-    raw_token = effective_auth[7:] if effective_auth and effective_auth.startswith("Bearer ") else None
-
     try:
         rows = parse_payload(payload)
         if rows:
-            pool.insert(rows, user_token=raw_token)
+            db.insert(rows, ws, warehouse_id)
             logger.debug(f"OTel: inserted {len(rows)} rows")
     except Exception as e:
         logger.error(f"OTel insert error: {e}")

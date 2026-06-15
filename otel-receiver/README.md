@@ -1,6 +1,6 @@
 # OTel Metrics Receiver
 
-Minimal Databricks App that collects CPU, memory, disk, and network metrics from Databricks cluster nodes (driver + workers) via OpenTelemetry and writes them to Lakebase.
+Minimal Databricks App that collects CPU, memory, disk, and network metrics from Databricks cluster nodes (driver + workers) via OpenTelemetry and appends them to a Delta table.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ Cluster node (driver + each worker)
        └─ downloads otelcol-contrib binary
        └─ collects host metrics every 15s
        └─ pushes OTLP/HTTP → [this app]/api/otel/v1/metrics
-              └─ writes to Lakebase → node_metrics table
+              └─ appends to Delta table: main.cluster_manager.node_metrics
 ```
 
 ## Files
@@ -18,11 +18,19 @@ Cluster node (driver + each worker)
 | File | Purpose |
 |---|---|
 | `app.py` | FastAPI entry point |
-| `otel.py` | `/api/otel` receiver endpoint |
-| `db.py` | Lakebase connection pool |
+| `otel.py` | `/api/otel/v1/metrics` receiver endpoint |
+| `db.py` | Delta table writer via SQL Warehouse |
 | `app.yaml` | Databricks App config (fill in before deploying) |
 | `requirements.txt` | Python dependencies |
 | `init_script.sh` | Cluster init script — runs on every node at startup |
+
+## Latency note
+
+Writes go through a SQL Warehouse (statement execution API), not a direct DB connection.
+
+- **Warm serverless warehouse**: ~0.5–2s per write — fine for 15s metrics
+- **Cold warehouse**: 1–3 min to start, then OTel retries flush through
+- **Recommendation**: use a Serverless SQL Warehouse — cold starts are ~2s
 
 ---
 
@@ -34,29 +42,11 @@ In your Databricks workspace: **Settings → Identity & Access → Service Princ
 
 - Name it something like `otel-collector`
 - Click into it → **Generate secret** → copy the **Client ID** (UUID) and **Secret**
-- Add the SP to the `users` group so it can authenticate
+- Add the SP to the `users` group so it can authenticate to the workspace
 
 ---
 
-### 2. Create a Lakebase instance
-
-```bash
-databricks lakebase create-project --name cluster-metrics
-databricks lakebase create-branch --project cluster-metrics --name main
-databricks lakebase create-endpoint --project cluster-metrics --branch main --name primary
-
-# Get the hostname — you'll need it for app.yaml
-databricks lakebase get-endpoint --project cluster-metrics --branch main --endpoint primary
-```
-
-Copy the `host` value from the output. It looks like:
-`abc123.database.cloud.databricks.com`
-
-> Check `databricks lakebase --help` if the subcommand names differ — this is a newer CLI feature.
-
----
-
-### 3. Store the SP secret in a Secret Scope
+### 2. Store the SP secret in a Secret Scope
 
 The init script reads the SP secret from a Databricks Secret Scope at cluster startup so it never appears in cluster config.
 
@@ -68,20 +58,23 @@ databricks secrets put-secret otel-collector sp-client-secret
 
 ---
 
-### 4. Fill in app.yaml
+### 3. Fill in app.yaml
 
 Edit `app.yaml` and replace all placeholder values:
 
-| Variable | Where to get it |
+| Variable | Value |
 |---|---|
 | `DATABRICKS_HOST` | Your workspace URL |
-| `LAKEBASE_HOST` | Host from step 2 |
-| `LAKEBASE_USER` | Your email address (Lakebase requires a human user token) |
+| `DELTA_CATALOG` | Unity Catalog catalog name (default: `main`) |
+| `DELTA_SCHEMA` | Schema name (default: `cluster_manager`) |
+| `SQL_WAREHOUSE_ID` | SQL Warehouse ID — leave blank to auto-discover, or paste ID from warehouse settings |
 | `OTEL_ALLOWED_SP_IDS` | SP Client ID UUID from step 1 |
+
+The Delta table `node_metrics` is created automatically on first deploy inside `{DELTA_CATALOG}.{DELTA_SCHEMA}`.
 
 ---
 
-### 5. Deploy the app
+### 4. Deploy the app
 
 ```bash
 cd otel-receiver
@@ -93,29 +86,15 @@ databricks apps deploy otel-receiver --source-code-path .
 Note the app URL from the output — it looks like:
 `https://otel-receiver-xxxx.aws.databricksapps.com`
 
----
-
-### 6. Bootstrap Lakebase (one-time after deploy)
-
-Lakebase only accepts human user tokens as passwords — SPs cannot connect directly. This step seeds the app with your token so it can write incoming metrics.
-
+Check it started correctly:
 ```bash
-TOKEN=$(databricks auth token --host YOUR-WORKSPACE.cloud.databricks.com | grep Token | awk '{print $2}')
-
-curl -X POST https://otel-receiver-xxxx.aws.databricksapps.com/api/otel/bootstrap \
-  -H "Authorization: Bearer $TOKEN"
+curl https://otel-receiver-xxxx.aws.databricksapps.com/health
+# → {"status": "healthy", "table": "`main`.`cluster_manager`.`node_metrics`", ...}
 ```
-
-Expected response:
-```json
-{"status": "ok", "node_metrics_rows": 0, "user": "your.email@company.com"}
-```
-
-You only need to do this once per deployment. If the app restarts it will re-read the cached token.
 
 ---
 
-### 7. Upload the init script to your workspace
+### 5. Upload the init script to your workspace
 
 ```bash
 databricks workspace import /Workspace/Users/your.email@company.com/init_otel.sh \
@@ -125,7 +104,7 @@ databricks workspace import /Workspace/Users/your.email@company.com/init_otel.sh
 
 ---
 
-### 8. Configure your dev cluster
+### 6. Configure your dev cluster
 
 In your cluster's **Advanced Options**:
 
@@ -147,27 +126,26 @@ Start the cluster. The init script runs automatically on the driver and every wo
 
 ## Verify it's working
 
-**Check the collector log on the driver:**
-```bash
-# In a cluster notebook cell:
+**Check the collector log on the driver** (run in a notebook cell):
+```python
 import subprocess
 print(subprocess.check_output(["cat", "/var/log/otelcol.log"]).decode())
 ```
 
-You should see lines like:
+You should see:
 ```
 OTel init: cluster=0612-... node=... driver=true type=...
 Got OAuth token (1234 chars)
 OTel Collector started with token refresh (PID ...)
 ```
 
-**Query the table** (from a notebook connected to Lakebase, or via psql):
+**Query the Delta table** from a Databricks notebook:
 ```sql
 SELECT cluster_id, instance_id, is_driver, ts,
        cpu_user_percent, mem_used_percent
-FROM node_metrics
+FROM main.cluster_manager.node_metrics
 ORDER BY ts DESC
-LIMIT 50;
+LIMIT 50
 ```
 
 ---
@@ -196,10 +174,10 @@ Every 15 seconds per node:
 ## Storage estimate
 
 At 100 clusters, 5 nodes each, 10 hours active per day:
-- ~1.2M rows/day, ~280 bytes/row
-- ~385 MB/day, ~2.5 GB at 7-day retention
+- ~1.2M rows/day, ~280 bytes/row on disk
+- ~385 MB/day, ~2.5 GB at 7-day retention (Delta with Parquet compression will be smaller)
 
-Retention is not automatically enforced — add a scheduled purge job if needed:
+Retention is not automatically enforced — add a scheduled Databricks Job:
 ```sql
-DELETE FROM node_metrics WHERE ts < NOW() - INTERVAL '7 days';
+DELETE FROM main.cluster_manager.node_metrics WHERE ts < NOW() - INTERVAL 7 DAYS;
 ```
