@@ -1,9 +1,12 @@
-"""Delta table writer for OTel node metrics.
+"""Storage layer for OTel node metrics.
 
-Write pattern: incoming rows are buffered in memory and flushed to Delta
-in a background task every FLUSH_INTERVAL_SECONDS (default 30s). This keeps
-Delta commits infrequent and file sizes reasonable instead of generating a
-new Parquet file per OTel push.
+Two paths:
+  HotCache    — in-memory ring buffer of the last HOT_WINDOW_MINUTES minutes.
+                Written to on every OTel push. Read by the live UI endpoint.
+                No warehouse, sub-millisecond reads.
+
+  WriteBuffer — accumulates rows and flushes to Delta every FLUSH_INTERVAL_SECONDS.
+                Historical archive, queried from notebooks/dashboards.
 """
 from __future__ import annotations
 
@@ -11,7 +14,8 @@ import asyncio
 import logging
 import os
 import threading
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timedelta, timezone
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import Disposition, Format, StatementState
@@ -177,3 +181,43 @@ class _WriteBuffer:
 
 
 buffer = _WriteBuffer()
+
+
+# ── Hot cache ─────────────────────────────────────────────────────────────────
+
+HOT_WINDOW = timedelta(minutes=int(os.getenv("HOT_WINDOW_MINUTES", "15")))
+
+
+class HotCache:
+    """In-memory ring buffer of recent metric rows for low-latency UI reads.
+
+    Every incoming OTel push lands here immediately. The live dashboard reads
+    from this cache — no warehouse, no Delta query, sub-millisecond response.
+    Rows older than HOT_WINDOW_MINUTES are evicted on each add().
+    """
+
+    def __init__(self):
+        self._rows: deque[dict] = deque()
+        self._lock = threading.Lock()
+
+    def add(self, rows: list[dict]) -> None:
+        cutoff = datetime.now(tz=timezone.utc) - HOT_WINDOW
+        with self._lock:
+            self._rows.extend(rows)
+            while self._rows and self._rows[0].get("ts", datetime.now(tz=timezone.utc)) < cutoff:
+                self._rows.popleft()
+
+    def latest(self, cluster_id: str | None = None, minutes: int = 5) -> list[dict]:
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=minutes)
+        with self._lock:
+            rows = [r for r in self._rows if r.get("ts", cutoff) >= cutoff]
+        if cluster_id:
+            rows = [r for r in rows if r["cluster_id"] == cluster_id]
+        return rows
+
+    def cluster_ids(self) -> list[str]:
+        with self._lock:
+            return list({r["cluster_id"] for r in self._rows})
+
+
+cache = HotCache()

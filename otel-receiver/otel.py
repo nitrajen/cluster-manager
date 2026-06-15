@@ -245,10 +245,26 @@ async def receive_metrics(
     try:
         rows = parse_payload(payload)
         if rows:
-            db.buffer.add(rows)  # returns immediately — flushed to Delta by background task
-            logger.debug(f"OTel: buffered {len(rows)} rows")
+            db.cache.add(rows)   # hot path — in-memory, read by /live endpoint
+            db.buffer.add(rows)  # cold path — flushed to Delta every 30s
+            logger.debug(f"OTel: accepted {len(rows)} rows")
     except Exception as e:
-        logger.error(f"OTel buffer error: {e}")
+        logger.error(f"OTel error: {e}")
         raise HTTPException(status_code=500, detail=str(e)[:300])
 
     return {}
+
+
+@router.get("/live")
+async def live_metrics(cluster_id: str | None = None, minutes: int = 5):
+    """Latest metrics from memory — no warehouse, sub-millisecond reads.
+
+    Used by the live dashboard. cluster_id filters to one cluster;
+    minutes controls the lookback window (max HOT_WINDOW_MINUTES).
+    """
+    rows = db.cache.latest(cluster_id=cluster_id, minutes=minutes)
+    return {
+        "rows": [{**r, "ts": r["ts"].isoformat()} for r in rows],
+        "count": len(rows),
+        "clusters": db.cache.cluster_ids(),
+    }
